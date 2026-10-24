@@ -75,7 +75,8 @@ def store(reg: Registry, audit_id: str, age_s: float, **kw) -> None:
     v = Verdict(audit_id=audit_id, target_name=SOLID.name, target_address=SOLID.resolve_address(), grade="F", score=39,
                 findings=[f], passed=10, total=11, **kw)
     reg.save_verdict(v, "user0")
-    reg._run("UPDATE audits SET created_at=? WHERE audit_id=?", (time.time() - age_s, audit_id))
+    row = reg.kv.get(f"verdict:{audit_id}")
+    reg.kv.set(f"verdict:{audit_id}", {**row, "created_at": time.time() - age_s})
 
 
 async def test_fresh_verdict_is_shown_with_its_age_and_audit_id(world):
