@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from agents import judge
 from core import config, llm
-from core.models import AttackCase, Exchange, JudgeRequest, ProbeResult
+from core.models import AttackCase, Exchange, JudgeRequest, ProbeProgress, ProbeResult, Verdict
+from core.registry import Registry
+from tests.fake_storage import FakeAgent, FakeCtx, Lockstep
 
 LEAKY = config.DEMO_TARGETS["target-leaky"]
 OVER = config.DEMO_TARGETS["target-overcharger"]
@@ -212,3 +216,72 @@ async def test_silent_target_never_earns_a_grade(asi1_says_safe):
     v = await judge.build_verdict(request(SOLID), silent)
     assert v.partial and v.grade == "F" and v.score == 0 and v.passed == 0
     assert v.partial_reason.startswith("nothing could be graded")
+
+
+# --- overlapping invocations (hosted agents): each one is a cold start over the same storage ---------------------
+
+
+def invocation(store, sent):
+    """One hosted invocation of the Judge: a fresh registry over the agent's storage, the handlers, a context."""
+    agent = FakeAgent()
+    judge.build_judge(Registry(store=store), agent)
+    return agent.handlers, FakeCtx(store, sent)
+
+
+def deliver(store, sent, msg):
+    handlers, ctx = invocation(store, sent)
+    return handlers[type(msg)](ctx, "agent1qsender", msg)
+
+
+def sent_of(sent, model) -> list:
+    return [m for _, m in sent if isinstance(m, model)]
+
+
+def test_a_probe_result_delivered_twice_is_reported_once(asi1_says_safe):
+    """Live: the Orchestrator relayed the same probe's progress twice, with different counts."""
+    store, sent = Lockstep(), []
+    results = solid_results()
+    asyncio.run(deliver(store.plain, sent, request(SOLID)))
+    store.overlap_async(lambda s: deliver(s, sent, results["leak"]), lambda s: deliver(s, sent, results["leak"]))
+    assert len(sent_of(sent, ProbeProgress)) == 1
+    for kind in ("injection", "payment"):
+        asyncio.run(deliver(store.plain, sent, results[kind]))
+    verdicts = sent_of(sent, Verdict)
+    assert len(verdicts) == 1 and verdicts[0].grade == "A" and len(sent_of(sent, ProbeProgress)) == 3
+
+
+def test_overlapping_results_of_different_probes_are_all_graded(asi1_says_safe):
+    """Live: payment progress never arrived and the verdict waited for the deadline: a result was overwritten."""
+    store, sent = Lockstep(), []
+    results = leaky_results()
+    asyncio.run(deliver(store.plain, sent, request(LEAKY)))
+    asyncio.run(deliver(store.plain, sent, results["injection"]))
+    store.overlap_async(lambda s: deliver(s, sent, results["leak"]), lambda s: deliver(s, sent, results["payment"]))
+    verdicts = sent_of(sent, Verdict)
+    assert len(verdicts) == 1 and {s.kind for s in verdicts[0].sections} == {"injection", "leak", "payment"}
+    assert sorted(p.kind for p in sent_of(sent, ProbeProgress)) == ["injection", "leak", "payment"]
+    assert not verdicts[0].partial
+
+
+def test_a_result_that_overlaps_its_request_is_graded_once(asi1_says_safe):
+    store, sent = Lockstep(), []
+    req, results = request(SOLID, ("leak",)), solid_results()
+    store.overlap_async(lambda s: deliver(s, sent, req), lambda s: deliver(s, sent, results["leak"]))
+    assert len(sent_of(sent, ProbeProgress)) == 1 and len(sent_of(sent, Verdict)) == 1
+    asyncio.run(deliver(store.plain, sent, req))  # the same request again: already graded, nothing new
+    assert len(sent_of(sent, Verdict)) == 1
+
+
+def test_the_deadline_grades_once_even_when_two_sweeps_overlap(asi1_says_safe):
+    store, sent = Lockstep(), []
+    req = request(SOLID).copy(update={"deadline_s": 0})
+    asyncio.run(deliver(store.plain, sent, req))
+    asyncio.run(deliver(store.plain, sent, solid_results()["leak"]))
+
+    def sweep(s):
+        handlers, ctx = invocation(s, sent)
+        return handlers["interval"](ctx)
+
+    store.overlap_async(sweep, sweep)
+    verdicts = sent_of(sent, Verdict)
+    assert len(verdicts) == 1 and verdicts[0].partial and "injection" in verdicts[0].partial_reason
