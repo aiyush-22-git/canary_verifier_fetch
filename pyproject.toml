@@ -26,6 +26,8 @@ dev = [
 asyncio_mode = "auto"
 testpaths = ["tests"]
 env = ["LOCAL_ONLY=1"]
+markers = ["live: hits the real asi1 API (needs ASI1_API_KEY); run with -m live"]
+addopts = "-m 'not live'"
 
 [tool.ruff]
 line-length = 120

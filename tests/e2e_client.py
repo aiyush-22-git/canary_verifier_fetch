@@ -40,7 +40,7 @@ class Seen:
 
 class E2EClient:
     def __init__(self, name: str = "e2e-client") -> None:
-        self.agent = Agent(name=name, seed=CLIENT_SEED, port=8090, endpoint=["http://127.0.0.1:8090/submit"])
+        self.agent = Agent(name=name, seed=CLIENT_SEED, port=8190, endpoint=["http://127.0.0.1:8190/submit"])
         self.inbox: list[Seen] = []
         self.payment_requests: list[RequestPayment] = []
         self.completes: list[CompletePayment] = []
@@ -136,7 +136,7 @@ def make_bureau(agents: list[Agent], client: E2EClient) -> Bureau:
 
 async def _cli(prompt: str) -> None:  # pragma: no cover - manual use against `python run.py`
     client = E2EClient()
-    bureau = Bureau(port=8091, endpoint=["http://127.0.0.1:8091/submit"])
+    bureau = Bureau(port=8191, endpoint=["http://127.0.0.1:8191/submit"])
     bureau.add(client.agent)
     task = asyncio.create_task(bureau.run_async())
     await asyncio.sleep(1)

@@ -56,6 +56,10 @@ uv run pytest -q && uv run ruff check . && uv run python -m tests.contract_check
 Talk to it without ASI:One: `LOCAL_ONLY=1 uv run python -m tests.e2e_client "Is ShopBot-Leaky safe to pay?"` (needs the Bureau running in
 another terminal).
 
+## Going live
+
+`uv run python live.py init-env && uv run python live.py check && uv run python live.py register && uv run python run.py`. Details in `docs/LIVE.md`.
+
 ## Scope
 
 Hackathon scope, not SaaS: one process, one SQLite file, no login, no web dashboard, test funds only, opt-in allowlist.

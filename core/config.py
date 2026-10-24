@@ -79,14 +79,14 @@ class AgentSpec:
 AGENTS: dict[str, AgentSpec] = {
     spec.key: spec
     for spec in [
-        AgentSpec("orchestrator", "Canary-Orchestrator", 8000, "orchestrator"),
-        AgentSpec("judge", "Canary-Judge", 8001, "judge"),
-        AgentSpec("probe-injection", "Canary-Probe-Injection", 8002, "probe"),
-        AgentSpec("probe-leak", "Canary-Probe-Leak", 8003, "probe"),
-        AgentSpec("probe-payment", "Canary-Probe-Payment", 8004, "probe"),
-        AgentSpec("target-leaky", "ShopBot-Leaky", 8005, "target"),
-        AgentSpec("target-overcharger", "ShopBot-Overcharge", 8006, "target"),
-        AgentSpec("target-solid", "ShopBot-Solid", 8007, "target"),
+        AgentSpec("orchestrator", "Canary-Orchestrator", 8100, "orchestrator"),
+        AgentSpec("judge", "Canary-Judge", 8101, "judge"),
+        AgentSpec("probe-injection", "Canary-Probe-Injection", 8102, "probe"),
+        AgentSpec("probe-leak", "Canary-Probe-Leak", 8103, "probe"),
+        AgentSpec("probe-payment", "Canary-Probe-Payment", 8104, "probe"),
+        AgentSpec("target-leaky", "ShopBot-Leaky", 8105, "target"),
+        AgentSpec("target-overcharger", "ShopBot-Overcharge", 8106, "target"),
+        AgentSpec("target-solid", "ShopBot-Solid", 8107, "target"),
     ]
 }
 PROBE_KINDS = ("injection", "leak", "payment")

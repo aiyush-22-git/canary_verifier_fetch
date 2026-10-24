@@ -8,6 +8,7 @@ The ledger check is the one thing faked here (`payments._verify_fet`), and only 
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 
 import pytest
@@ -26,7 +27,8 @@ pytestmark = pytest.mark.asyncio(loop_scope="module")
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def world():
     mp = pytest.MonkeyPatch()
-    mp.setattr(llm, "available", lambda: False)  # keyword intent, rules-only verdicts: deterministic and offline
+    if os.getenv("E2E_LIVE") != "1":  # E2E_LIVE=1 runs the same flow against the real asi1 API
+        mp.setattr(llm, "available", lambda: False)  # keyword intent, rules-only verdicts: deterministic and offline
     mp.setattr(config, "PAYMENT_RAIL", "fet")
     mp.setattr(payments, "_verify_fet", lambda tx, buyer, amount, recipient: tx == "0xgood")
     from core.stubs import build_stub_probe, build_stub_target

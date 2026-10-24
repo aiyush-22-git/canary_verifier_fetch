@@ -22,6 +22,8 @@
 Entry points `run.py` expects: `agents.probe.build_probe(kind)` and `agents.target.build_target(key)`. Until they exist the stubs in `core/stubs.py` run.
 
 ## Broken / known gaps
+- Ports moved to 8100-8107 (8000 collides with common dev servers). `tests/test_e2e.py` needs 8100 free: stop any running `run.py` before `pytest`.
+- LOCAL_ONLY agents still self-register on the testnet Almanac (uAgents default) with public dev seeds; harmless, local delivery is used first.
 - Probe/target are stubs: the matrix, hard payment fails and tool-based attacks are untested until B1/B2 land.
 - Cards are schema-validated locally but not yet pasted into the ASI:One Card Playground (needs a human, 5 minutes). `detail` cards omit `sub_options`; if the Playground insists on it, add one to `core/cards.py`.
 - Payments: FET and Stripe code paths written from the fetch-skills reference; untested against a real ledger/Stripe (no funds/keys in CI). Run the Phase 4 payment spike on a real chat before the freeze.
@@ -29,6 +31,7 @@ Entry points `run.py` expects: `agents.probe.build_probe(kind)` and `agents.targ
 - Architecture image for the README is not made yet (ASCII diagram only).
 
 ## Human-only steps (need accounts, keys, or a browser)
+Full runbook: `docs/LIVE.md`. Helper: `uv run python live.py init-env | check | register | addresses`; real-asi1 tests: `uv run pytest -m live`.
 0. CI: the push token had no `workflow` scope, so the workflow lives at `docs/ci.yml.template`. Copy it to `.github/workflows/ci.yml` with a token that has the scope (or via the GitHub web UI), then protect `main` with that check.
 1. Fill `.env` (`ASI1_API_KEY`, `BACKBOARD_API_KEY`, `AGENTVERSE_API_KEY`, one `SEED_*` per agent, `PAYMENT_RAIL`) on **A1's machine only**.
 2. `uv run python run.py --addresses`, run the Bureau, register the 8 agents on Agentverse, copy the addresses into the README table.
