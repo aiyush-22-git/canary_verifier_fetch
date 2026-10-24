@@ -97,7 +97,7 @@ def test_dodo_test_mode_checkout_is_created_and_refused_while_unpaid():
     session_id, url = made
     assert url.startswith("https://") and session_id
     v = payments.verify_dodo(session_id, "livecheck0001")
-    assert not v.ok and "not paid yet" in v.reason
+    assert not v.ok and "not paid yet" in v.reason and v.kind == "unpaid"
 
 
 # --- live.py itself: no network, always runs ----------------------------------------------------

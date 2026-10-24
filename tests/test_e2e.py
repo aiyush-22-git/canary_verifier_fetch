@@ -18,7 +18,6 @@ from agents.judge import build_judge
 from agents.orchestrator import build_orchestrator
 from core import config, llm, payments
 from core.registry import Registry
-from run import _factory
 from tests.e2e_client import E2EClient, make_bureau
 
 pytestmark = pytest.mark.asyncio(loop_scope="module")
@@ -31,12 +30,11 @@ async def world():
         mp.setattr(llm, "available", lambda: False)  # keyword intent, rules-only verdicts: deterministic and offline
     mp.setattr(config, "PAYMENT_RAIL", "fet")
     mp.setattr(payments, "_verify_fet", lambda tx, buyer, amount, recipient: tx == "0xgood")
-    from core.stubs import build_stub_probe, build_stub_target
+    from agents.probe import build_probe
+    from agents.target import build_target
 
     reg = Registry(":memory:")
     reg.seed_allowlist()
-    build_probe = _factory("agents.probe", "build_probe", build_stub_probe)
-    build_target = _factory("agents.target", "build_target", build_stub_target)
     agents = [build_orchestrator(reg), build_judge()]
     agents += [build_probe(k) for k in config.PROBE_KINDS]
     agents += [build_target(k) for k in config.DEMO_TARGETS]
@@ -216,10 +214,56 @@ async def test_dodo_paid_audit_end_to_end(world, dodo):
     assert reg.get_verdict(sel["audit_id"]).grade == "F"
     assert reg.payment_seen(pid)
 
-    # the same button again is a replay: nothing runs twice
+    # the same buttons again: nothing runs twice, nothing is charged twice, and the buyer is told where the audit is
+    for again_sel in (check, sel):
+        m = len(client.inbox)
+        client.click(again_sel)
+        assert "already confirmed" in (await client.text_containing("already confirmed", after=m)).text
+    assert len(dodo.sessions) == 1 and reg.get_pending(sel["audit_id"], client.agent.address)["payment_ref"] == pid
+
+
+async def test_dodo_cancel_after_paying_is_refused_and_the_audit_still_runs(world, dodo):
+    client, reg = world
+    sel = await plan_for(client, "ShopBot-Solid")
+    n = len(client.inbox)
+    client.click(sel)
+    link = await client.text_containing("dodopayments.com/session/", after=n)
+    dodo.pay(link.text.rsplit("/", 1)[1].strip())
     m = len(client.inbox)
-    client.click(check)
-    assert "No payment is open" in str((await client.card("detail", after=m))["payload"])
+    client.click({"action": "cancel", "audit_id": sel["audit_id"]})
+    card = await client.card("detail", after=m)
+    assert "already paid" in str(card["payload"]) and card["payload"]["ctas"][0]["selection"]["action"] == "check_payment"
+    assert reg.get_pending(sel["audit_id"], client.agent.address)["state"] == "awaiting_payment"
+
+
+async def test_dodo_cancel_unpaid_then_paying_anyway_still_runs_the_audit(world, dodo):
+    client, reg = world
+    sel = await plan_for(client, "ShopBot-Solid")
+    n = len(client.inbox)
+    client.click(sel)
+    link = await client.text_containing("dodopayments.com/session/", after=n)
+    m = len(client.inbox)
+    client.click({"action": "cancel", "audit_id": sel["audit_id"]})
+    assert "Nothing was charged" in (await client.text_containing("Cancelled", after=m)).text
+    dodo.pay(link.text.rsplit("/", 1)[1].strip())  # the buyer pays the old link anyway: they get what they paid for
+    m = len(client.inbox)
+    client.click({"action": "check_payment", "audit_id": sel["audit_id"]})
+    await client.text_containing("Payment confirmed", after=m)
+    assert reg.get_pending(sel["audit_id"], client.agent.address)["state"] in {"running", "done"}
+
+
+async def test_dodo_failed_payment_starts_nothing_and_offers_a_retry(world, dodo):
+    client, reg = world
+    sel = await plan_for(client, "ShopBot-Solid")
+    n = len(client.inbox)
+    client.click(sel)
+    link = await client.text_containing("dodopayments.com/session/", after=n)
+    dodo.pay(link.text.rsplit("/", 1)[1].strip(), status="failed")
+    m = len(client.inbox)
+    client.click({"action": "check_payment", "audit_id": sel["audit_id"]})
+    card = await client.card("detail", after=m)
+    assert "didn't go through" in str(card["payload"]) and card["payload"]["ctas"][0]["selection"]["action"] == "check_payment"
+    assert reg.get_pending(sel["audit_id"], client.agent.address)["state"] == "awaiting_payment"
 
 
 async def test_dodo_underpaid_checkout_does_not_start_an_audit(world, dodo):

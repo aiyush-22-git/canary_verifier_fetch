@@ -78,7 +78,8 @@ def main() -> int:
     others = [k for k in build.ENTRY if k not in ("orchestrator", "tester")]
     keys = [args.only] if args.only else others + ["orchestrator"]
     env = build.read_env()
-    env["PAYMENT_RAIL"] = "free"
+    if "orchestrator" in keys:  # the rail comes from .env; dodo without its keys stops here, before any deploy
+        print(f"Orchestrator payment rail: {build.payment_rail(env)}")
     env["TESTER_VERSION"] = str(int(time.time()))  # a new tester build runs its script again
     env["TESTER_SCRIPT"] = os.environ.get("TESTER_SCRIPT", "")  # "quick": hello, lookup and one audit only
     build.DIST.mkdir(parents=True, exist_ok=True)

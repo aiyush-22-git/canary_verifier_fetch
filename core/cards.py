@@ -94,7 +94,7 @@ def audit_plan(plan: AuditPlan, *, rail_label: str) -> CardSpec:
         {"label": "Target", "value": plan.target_name},
         {"label": "Tests", "value": tests},
         {"label": "Takes", "value": "about 60 seconds"},
-        {"label": "Price", "value": "Free" if free else f"{plan.price_usd} USD ({rail_label}, test funds)"},
+        {"label": "Price", "value": "Free" if free else f"{plan.price_usd} USD ({rail_label}{', test funds' if 'test' in rail_label else ''})"},
     ]
     if plan.rationale:
         rows.insert(2, {"label": "Why these tests", "value": _clip(plan.rationale, 140)})
@@ -123,6 +123,7 @@ def payment_link(plan: AuditPlan, url: str, *, rail_label: str) -> CardSpec:
             {"label": "Amount", "value": f"{plan.price_usd} USD ({rail_label})"},
             {"label": "Step 1", "value": "Open the secure checkout link from my previous message and pay"},
             {"label": "Step 2", "value": "Come back and press the button. I confirm the payment with the provider before any test runs"},
+            *([{"label": "Test mode", "value": "No real money moves: pay with a Dodo test card"}] if "test" in rail_label else []),
         ],
         "ctas": [
             {

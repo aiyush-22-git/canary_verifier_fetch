@@ -1,9 +1,9 @@
 """Payment Protocol seller side: build the RequestPayment, verify the CommitPayment.
 
-Price and recipient are decided here, server-side; nothing the buyer sends is trusted. FET is
-verified with a ledger query (cosmpy), Stripe with a Checkout Session lookup. Both functions
-are blocking: callers run them with asyncio.to_thread. Replay protection lives in the
-registry (payments.tx_id is unique), not here.
+Price and recipient are decided here, server-side; nothing the buyer sends is trusted. Dodo is
+verified with a checkout-session + payment lookup (stdlib HTTP, bounded timeouts), FET with a ledger
+query (cosmpy), Stripe with a Checkout Session lookup. All of them block: callers run them with
+asyncio.to_thread. Replay protection lives in the registry (payments.tx_id is unique), not here.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ class Verification:
     reason: str = ""
     method: str = ""
     tx_id: str = ""
+    kind: str = ""  # on failure (Dodo): unpaid | pending | failed | refused | unreachable
 
 
 def is_free() -> bool:
@@ -63,7 +64,12 @@ def uses_checkout_link() -> bool:
 
 # --- Dodo Payments (hosted checkout link + our own server-side payment check) ----------------
 
-DODO_TIMEOUT_S = 15
+DODO_TIMEOUT_S = 10  # per call; verify makes two, and the handler awaits them in a worker thread
+# Dodo IntentStatus values that mean "not finished yet": the buyer may still complete this checkout.
+DODO_PENDING = {
+    "processing", "requires_customer_action", "requires_merchant_action", "requires_payment_method",
+    "requires_confirmation", "requires_capture", "partially_captured", "partially_captured_and_capturable",
+}
 
 
 def _dodo_base() -> str:
@@ -71,15 +77,29 @@ def _dodo_base() -> str:
 
 
 def _dodo_http(method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
-    """The only function that touches the network for Dodo (tests replace it). Raises on non-2xx."""
-    import httpx
+    """The only function that touches the network for Dodo (tests replace it). Raises on non-2xx.
+    Standard library only: Agentverse hosted agents get just uagents, uagents-core and openai."""
+    import json
+    import urllib.error
+    import urllib.request
 
-    r = httpx.request(
-        method, _dodo_base() + path, json=body, timeout=DODO_TIMEOUT_S,
-        headers={"Authorization": f"Bearer {config.DODO_API_KEY}"},
+    req = urllib.request.Request(
+        _dodo_base() + path, method=method,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={
+            "Authorization": f"Bearer {config.DODO_API_KEY}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "Canary-Orchestrator/1.0",  # the default Python-urllib agent can be bot-filtered
+        },
     )
-    r.raise_for_status()
-    return r.json()
+    try:
+        with urllib.request.urlopen(req, timeout=DODO_TIMEOUT_S) as r:
+            return json.loads(r.read().decode() or "{}")
+    except urllib.error.HTTPError as exc:  # log the status and Dodo's message, never the request headers
+        detail = exc.read().decode(errors="replace")[:200] if exc.fp else ""
+        log.warning("dodo %s %s -> HTTP %s %s", method, path.split("/")[1], exc.code, detail)
+        raise
 
 
 def create_dodo_session(audit_id: str, requester: str) -> tuple[str, str] | None:
@@ -88,6 +108,10 @@ def create_dodo_session(audit_id: str, requester: str) -> tuple[str, str] | None
     body: dict[str, Any] = {
         "product_cart": [{"product_id": config.DODO_PRODUCT_ID, "quantity": 1}],
         "metadata": {"audit_id": audit_id, "requester": requester},
+        # The price is checked in USD cents: keep the buyer in USD (adaptive pricing would switch currency)
+        # and without discount codes (an underpaid checkout is refused, so a code would only strand a payment).
+        "billing_currency": "USD",
+        "feature_flags": {"allow_currency_selection": False, "allow_discount_code": False},
     }
     if config.DODO_RETURN_URL:
         body["return_url"] = config.DODO_RETURN_URL
@@ -104,30 +128,37 @@ def verify_dodo(session_id: str, audit_id: str) -> Verification:
     """Blocking. Two calls: the session (did it produce a succeeded payment?) and the payment itself
     (status, that it belongs to *this* session, amount, currency, metadata). The session id comes from
     the registry, never from the buyer's message; the returned tx_id is the Dodo payment id, which the
-    registry makes single-use."""
+    registry makes single-use. On failure `kind` says what the buyer can do next: unpaid (pay, then check again),
+    pending (still processing: check again), failed (retry at the link), refused (wrong payment: no retry),
+    unreachable (Dodo did not answer: try again later)."""
     try:
         session = _dodo_http("GET", f"/checkouts/{session_id}")
     except Exception as exc:
-        return Verification(False, f"Dodo session lookup failed ({type(exc).__name__})", "dodo")
-    payment_id = session.get("payment_id")
-    if not payment_id or session.get("payment_status") != "succeeded":
-        status = session.get("payment_status") or "not started"
-        return Verification(False, f"the checkout is not paid yet (status: {status})", "dodo")
+        return Verification(False, f"I couldn't reach Dodo to check the payment ({type(exc).__name__})", "dodo",
+                            kind="unreachable")
+    payment_id, status = session.get("payment_id"), session.get("payment_status")
+    if status in ("failed", "cancelled"):
+        return Verification(False, f"the payment {status}, so nothing was charged", "dodo", kind="failed")
+    if not payment_id or status != "succeeded":
+        return Verification(False, f"the checkout is not paid yet (status: {status or 'not started'})", "dodo",
+                            kind="pending" if status in DODO_PENDING else "unpaid")
     try:
         pay = _dodo_http("GET", f"/payments/{payment_id}")
     except Exception as exc:
-        return Verification(False, f"Dodo payment lookup failed ({type(exc).__name__})", "dodo")
+        return Verification(False, f"I couldn't reach Dodo to check the payment ({type(exc).__name__})", "dodo",
+                            kind="unreachable")
     if pay.get("status") != "succeeded":
-        return Verification(False, f"payment status is {pay.get('status')}", "dodo")
+        kind = "pending" if pay.get("status") in DODO_PENDING else "failed"
+        return Verification(False, f"the payment is not paid yet (status: {pay.get('status')})", "dodo", kind=kind)
     if pay.get("checkout_session_id") != session_id:
-        return Verification(False, "the payment belongs to a different checkout", "dodo")
+        return Verification(False, "the payment belongs to a different checkout", "dodo", kind="refused")
     if str(pay.get("currency") or "").upper() != "USD":
-        return Verification(False, f"unexpected currency {pay.get('currency')}", "dodo")
+        return Verification(False, f"unexpected currency {pay.get('currency')}", "dodo", kind="refused")
     if int(pay.get("total_amount") or 0) < int(Decimal(config.AUDIT_PRICE_USD) * 100):
-        return Verification(False, "the amount paid is below the audit price", "dodo")
+        return Verification(False, "the amount paid is below the audit price", "dodo", kind="refused")
     meta = pay.get("metadata") or {}
     if meta.get("audit_id") and meta["audit_id"] != audit_id:
-        return Verification(False, "the payment was made for a different audit", "dodo")
+        return Verification(False, "the payment was made for a different audit", "dodo", kind="refused")
     return Verification(True, method="dodo", tx_id=str(payment_id))
 
 
