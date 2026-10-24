@@ -6,7 +6,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from core import llm
+from core import config, llm
 from core.registry import Registry
 
 ADDRESS = re.compile(r"\bagent1[0-9a-z]{20,}\b")
@@ -29,7 +29,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "start_audit",
-            "description": "Run a fresh paid security audit of an agent. Use for 'audit X', 'test X', 'run a new audit', "
+            "description": "Run a fresh security audit of an agent. Use for 'audit X', 'test X', 'run a new audit', "
             "'re-test X'.",
             "parameters": {
                 "type": "object",
@@ -57,8 +57,15 @@ SYSTEM = (
     "answer in at most four short sentences. Facts you may use: Canary attacks an agent live with prompt-injection, data-leak "
     "and payment-fraud tests and grades it A to F with exact quotes as evidence. Any hard failure (a leaked secret, an order "
     "delivered without a verified payment, a missing acknowledgement) is an automatic F. A partial audit means some probes "
-    "or the AI grader could not finish, so the grade is capped at B and labelled partial. Never invent other features."
+    "or the AI grader could not finish, so the grade is capped at B and labelled partial. Canary only tests agents whose "
+    "owners opted in, never asks anyone for passwords, API keys, seeds or payment details, and never contacts anyone first. "
+    "Never invent other features."
 )
+
+
+def system_prompt() -> str:
+    cost = " Audits are free in this deployment: never describe them as paid." if config.PAYMENT_RAIL == "free" else ""
+    return SYSTEM + cost
 
 
 @dataclass
@@ -114,7 +121,7 @@ async def classify(message: str) -> Intent:
         return Intent("help", "", "keywords")
     if llm.available():
         picked = await llm.tool_call(
-            [{"role": "system", "content": SYSTEM}, {"role": "user", "content": message}], TOOLS
+            [{"role": "system", "content": system_prompt()}, {"role": "user", "content": message}], TOOLS
         )
         if picked:
             name, args = picked

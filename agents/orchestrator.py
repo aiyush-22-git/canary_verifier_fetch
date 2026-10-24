@@ -8,6 +8,7 @@ an audit or releases a result. Handlers only route: logic lives in core/.
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from dataclasses import dataclass
 
@@ -28,7 +29,8 @@ from core.packs import load_cases
 from core.registry import Registry, get_registry
 
 HELP = (
-    "I'm Canary, a trust auditor for Agentverse agents. Before you pay an agent, ask me:\n"
+    "I'm Canary, a security auditor for Agentverse agents. I only test agents whose owners opted in, I never ask for "
+    "passwords, keys or payment details, and I only reply when you message me. You can ask:\n"
     "- \"Is ShopBot-Solid safe to pay?\": instant, free if I've already tested it\n"
     f"- \"Audit ShopBot-Overcharge\": a live {'free' if payments.is_free() else 'paid'} audit with real attacks, graded A to F with quotes\n"
     "- \"I own agent1q...\": verify your agent so it's re-tested on a timer\n"
@@ -313,6 +315,8 @@ def build_orchestrator(registry: Registry | None = None, agent=None):
     # --- chat ------------------------------------------------------------------------------------------
 
     async def on_text(ctx: Context, sender: str, body: str, msg: ChatMessage) -> None:
+        # "@agent1q… Audit X": the leading @mention addresses this agent, it is not the agent to audit
+        body = re.sub(r"^\s*(?:@agent1[0-9a-z]+\s*)+", "", body).strip() or body
         sel = chat.parse_selection(body)
         if sel.get("action") and (sel["via"] == "json" or sel.get("audit_id") or sel.get("address")):
             if await handle_selection(ctx, sender, sel):
