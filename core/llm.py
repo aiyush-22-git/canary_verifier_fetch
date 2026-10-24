@@ -1,4 +1,4 @@
-"""The only asi1 client. OpenAI SDK pointed at ASI:One, 20 s timeout, one retry.
+"""The only asi1 client. OpenAI SDK pointed at ASI:One, 20 s timeout, one retry, a persisted token cap.
 
 Nothing else imports `openai`. Callers get plain dicts / strings, or `None` on failure so
 every feature can degrade (rules-only verdicts, keyword intent, cached plans).
@@ -6,9 +6,12 @@ every feature can degrade (rules-only verdicts, keyword intent, cached plans).
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import re
+from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 from openai import AsyncOpenAI
@@ -40,14 +43,37 @@ def reset_client() -> None:
     _client = None
 
 
+# --- token budget: every asi1 call counts; persisted so restarts can't reset it ------------
+
+
+def tokens_used() -> int:
+    try:
+        return int(json.loads(Path(config.LLM_USAGE_FILE).read_text(encoding="utf-8"))["total_tokens"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return 0
+
+
+def _record_usage(resp: Any) -> None:
+    spent = getattr(getattr(resp, "usage", None), "total_tokens", None)
+    if not isinstance(spent, int) or spent <= 0:
+        return
+    path = Path(config.LLM_USAGE_FILE)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"total_tokens": tokens_used() + spent}), encoding="utf-8")
+
+
 async def _create(**kwargs: Any) -> Any:
     """One call with one retry. Raises the last error; wrappers below turn that into None."""
     if not available():
         raise RuntimeError("ASI1_API_KEY is not set")
+    if tokens_used() >= config.LLM_TOKEN_CAP:
+        raise RuntimeError(f"asi1 token cap reached ({config.LLM_TOKEN_CAP} tokens)")
     last: Exception | None = None
     for attempt in range(2):
         try:
-            return await _get_client().chat.completions.create(**kwargs)
+            resp = await _get_client().chat.completions.create(**kwargs)
+            _record_usage(resp)
+            return resp
         except Exception as exc:  # network, 429, 5xx, timeout
             last = exc
             log.warning("asi1 call failed (attempt %d): %s", attempt + 1, type(exc).__name__)
@@ -131,3 +157,62 @@ async def tool_call(
     except json.JSONDecodeError:
         args = {}
     return fn.name, args if isinstance(args, dict) else {}
+
+
+ToolHandler = Callable[[str, dict[str, Any]], Any | Awaitable[Any]]
+
+
+async def run_tools(
+    system: str,
+    history: list[dict[str, Any]],
+    user: str,
+    tools: list[dict[str, Any]],
+    handler: ToolHandler,
+    *,
+    model: str | None = None,
+    max_rounds: int = 5,
+    max_tokens: int = 600,
+) -> tuple[str, list[dict[str, Any]]] | None:
+    """Target brain: the full tool-call loop (asi1 asks for tools -> `handler` runs them -> results go
+    back -> repeat, at most `max_rounds`). asi1 keeps no server-side thread, so the caller owns
+    `history` and gets the extended one back. Returns (text, history) or None when asi1 failed."""
+    convo = [*history, {"role": "user", "content": user}]
+    try:
+        for _ in range(max_rounds + 1):
+            resp = await _create(
+                model=model or config.ASI1_TARGET_MODEL,
+                messages=[{"role": "system", "content": system}, *convo],
+                tools=tools,
+                tool_choice="auto",
+                temperature=0.2,
+                max_tokens=max_tokens,
+            )
+            msg = resp.choices[0].message
+            calls = list(msg.tool_calls or [])
+            if not calls:
+                text = (msg.content or "").strip()
+                convo.append({"role": "assistant", "content": text})
+                return text, convo
+            convo.append({
+                "role": "assistant",
+                "content": msg.content or "",
+                "tool_calls": [
+                    {"id": c.id, "type": "function",
+                     "function": {"name": c.function.name, "arguments": c.function.arguments or "{}"}}
+                    for c in calls
+                ],
+            })
+            for c in calls:
+                try:
+                    args = json.loads(c.function.arguments or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    args = {}
+                result = handler(c.function.name, args if isinstance(args, dict) else {})
+                if inspect.isawaitable(result):
+                    result = await result
+                convo.append({"role": "tool", "tool_call_id": c.id, "content": json.dumps(result, default=str)})
+    except Exception as exc:  # asi1 down, cap reached, or a tool blew up: the target degrades
+        log.warning("asi1 tool loop failed: %s", type(exc).__name__)
+        return None
+    log.warning("asi1 tool loop exceeded %d rounds", max_rounds)
+    return None
