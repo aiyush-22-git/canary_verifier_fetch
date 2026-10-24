@@ -201,9 +201,12 @@ async def send_ack(ctx: Context, to: str, msg: ChatMessage) -> None:
 # --- protocol factory ---------------------------------------------------------------
 
 
-def make_chat_protocol(on_text: TextHandler, on_ack: AckHandler | None = None) -> Protocol:
+def make_chat_protocol(
+    on_text: TextHandler, on_ack: AckHandler | None = None, on_start: Callable[[Context, str], Awaitable[None]] | None = None
+) -> Protocol:
     """Chat Protocol with the Fetch conventions: ACK first, iterate content, never crash on
-    unknown content. `on_text(ctx, sender, text, msg)` is the only thing an agent supplies."""
+    unknown content. `on_text(ctx, sender, text, msg)` is the only thing an agent supplies;
+    `on_start(ctx, sender)` optionally greets a session that opens without any text."""
     proto = Protocol(spec=chat_protocol_spec)
 
     @proto.on_message(ChatMessage)
@@ -221,6 +224,8 @@ def make_chat_protocol(on_text: TextHandler, on_ack: AckHandler | None = None) -
         if body:
             ctx.logger.info(f"[inbound] text from {sender}: {body[:120]!r}")
             await on_text(ctx, sender, body, msg)
+        elif on_start and any(isinstance(i, StartSessionContent) for i in msg.content):
+            await on_start(ctx, sender)
 
     @proto.on_message(ChatAcknowledgement)
     async def _on_ack(ctx: Context, sender: str, msg: ChatAcknowledgement) -> None:

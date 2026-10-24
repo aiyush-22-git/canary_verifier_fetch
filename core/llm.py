@@ -144,11 +144,14 @@ async def complete_json(system: str, user: str, *, max_tokens: int = 900) -> dic
     return parse_json_object(raw) if raw else None
 
 
+PROSE = "__prose__"  # tool_call's name when the model chose no tool and just answered
+
+
 async def tool_call(
     messages: list[dict[str, Any]], tools: list[dict[str, Any]], *, max_tokens: int = 400
 ) -> tuple[str, dict[str, Any]] | None:
-    """Let asi1 pick one tool. Returns (tool_name, arguments) or None when it answered in prose
-    or the call failed."""
+    """Let asi1 pick one tool. Returns (tool_name, arguments); (PROSE, {"text": ...}) when it chose no tool
+    and answered in words; None when the call failed."""
     try:
         resp = await _create(
             model=config.ASI1_MODEL,
@@ -163,8 +166,8 @@ async def tool_call(
         return None
     calls = resp.choices[0].message.tool_calls or []
     if not calls:
-        visible(f"[llm] tool_call: model answered in prose, no tool: {(resp.choices[0].message.content or '')[:100]!r}")
-        return None
+        prose = (resp.choices[0].message.content or "").strip()
+        return (PROSE, {"text": prose[:1200]}) if prose else None
     fn = calls[0].function
     try:
         args = json.loads(fn.arguments or "{}")

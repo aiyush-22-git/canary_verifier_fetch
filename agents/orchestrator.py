@@ -309,6 +309,9 @@ def build_orchestrator(registry: Registry | None = None, agent=None):
                 return
         it = await intent.classify(body)
         ctx.logger.info(f"[state] intent={it.action} via={it.source}")
+        if it.action == "answer":
+            await chat.send_text(ctx, sender, f"{it.agent}\n\nTry: \"Is ShopBot-Solid safe to pay?\" or \"Audit ShopBot-Leaky\".")
+            return
         if it.action == "verify_owner":
             addr = intent.resolve_agent(reg, it.agent, body)
             if addr and intent.ADDRESS.fullmatch(addr):
@@ -330,7 +333,10 @@ def build_orchestrator(registry: Registry | None = None, agent=None):
             return
         await chat.send_text(ctx, sender, HELP)
 
-    agent.include(chat.make_chat_protocol(on_text), publish_manifest=True)
+    async def on_start(ctx: Context, sender: str) -> None:
+        await chat.send_text(ctx, sender, HELP)
+
+    agent.include(chat.make_chat_protocol(on_text, on_start=on_start), publish_manifest=True)
 
     # --- payment protocol (seller) -----------------------------------------------------------------------
 
