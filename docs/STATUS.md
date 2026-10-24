@@ -1,8 +1,10 @@
 # STATUS (A1 updates after every merge)
 
+**All work lives on `main`; Codex: branch from `main`, open PRs into `main`, rebase before pushing.**
+
 **Phase:** 2 of 5, Codex work can start now. **Gate:** 3 x 3 probe-target matrix (not met: waiting for B1 and B2).
 
-## Merged / ready on `claude/track-a`
+## Merged on `main`
 - Contracts (`core/models.py`), config, `llm` (asi1), `chat`, `registry`, `agentkit`, `payments`, `intent`, `planner`, `packs` loader, dev `stubs`
 - Orchestrator (intent, plan, paid audit, replay rejection, forged-selection refusal, owner verification, re-verify timer), Judge, six cards + notice card
 - `run.py` Bureau with stub probes and targets, CI, PR template, `tests/contract_check.py`, simulated ASI:One client (`tests/e2e_client.py`)
