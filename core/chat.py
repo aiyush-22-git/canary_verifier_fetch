@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
@@ -39,7 +39,7 @@ AckHandler = Callable[[Context, str, ChatAcknowledgement], Awaitable[None]]
 
 
 def _now() -> datetime:
-    return datetime.now(UTC)
+    return datetime.now(timezone.utc)  # datetime.UTC is 3.11+; hosted agents run 3.10
 
 
 def text(body: str, *, end_session: bool = False) -> ChatMessage:

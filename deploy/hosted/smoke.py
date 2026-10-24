@@ -26,5 +26,21 @@ def main(path: str) -> int:
     return 0
 
 
+def run_all(dist: str) -> int:
+    """Each bundle in its own process (fresh interpreter, like the hosted runtime). Pass the dist folder."""
+    import subprocess
+
+    bad = 0
+    for agent_py in sorted(Path(dist).resolve().glob("*/agent.py")):
+        proc = subprocess.run([sys.executable, "-I", str(Path(__file__).resolve()), str(agent_py)], capture_output=True, text=True, cwd="/tmp", timeout=120)
+        if proc.returncode:
+            bad += 1
+            print(f"FAIL {agent_py.parent.name}: " + (proc.stderr.strip().splitlines() or ["?"])[-1][:200])
+        else:
+            print(proc.stdout.strip().splitlines()[-1])
+    return 1 if bad else 0
+
+
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1]))
+    target = sys.argv[1]
+    sys.exit(run_all(target) if Path(target).is_dir() else main(target))

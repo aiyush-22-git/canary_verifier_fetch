@@ -6,7 +6,6 @@ Orchestrator checks every card selection against: a selection alone never starts
 
 from __future__ import annotations
 
-import base64
 import secrets
 import sqlite3
 import threading
@@ -113,15 +112,23 @@ class Registry:
             self._save()
 
     def _load(self) -> None:
+        """Rebuild the in-memory database from the stored SQL dump (sqlite3 serialize() needs Python 3.11; hosted runs 3.10)."""
         if self._store is None:
             return
-        raw = self._store.get(STORE_KEY)
-        if raw:
-            self._db.deserialize(base64.b64decode(raw))
+        dump = self._store.get(STORE_KEY)
+        if dump:
+            db = sqlite3.connect(":memory:", check_same_thread=False)
+            db.row_factory = sqlite3.Row
+            try:
+                db.executescript(dump)
+            except sqlite3.Error:  # an unreadable snapshot (older format) must not wedge the agent: start fresh
+                db.close()
+                return
+            self._db = db
 
     def _save(self) -> None:
         if self._store is not None:
-            self._store.set(STORE_KEY, base64.b64encode(self._db.serialize()).decode("ascii"))
+            self._store.set(STORE_KEY, "\n".join(self._db.iterdump()))
 
     def _run(self, sql: str, args: tuple = ()) -> sqlite3.Cursor:
         with self._lock:
