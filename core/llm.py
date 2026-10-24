@@ -43,6 +43,14 @@ def reset_client() -> None:
     _client = None
 
 
+LOGGER: Any = None  # hosted bundles set this to the agent's own logger: it is the only log output the platform shows
+
+
+def visible(message: str) -> None:
+    """A diagnostic line that reaches the hosted agent's logs (never include keys or prompts)."""
+    (LOGGER or log).warning(message)
+
+
 # --- token budget: every asi1 call counts; persisted so restarts can't reset it ------------
 
 
@@ -80,6 +88,7 @@ async def _create(**kwargs: Any) -> Any:
         except Exception as exc:  # network, 429, 5xx, timeout
             last = exc
             log.warning("asi1 call failed (attempt %d): %s", attempt + 1, type(exc).__name__)
+            visible(f"[llm] asi1 call failed (attempt {attempt + 1}): {type(exc).__name__}: {str(exc)[:160]}")
     assert last is not None
     raise last
 
@@ -149,10 +158,12 @@ async def tool_call(
             temperature=0,
             max_tokens=max_tokens,
         )
-    except Exception:
+    except Exception as exc:
+        visible(f"[llm] tool_call unavailable: {type(exc).__name__}: {str(exc)[:160]}")
         return None
     calls = resp.choices[0].message.tool_calls or []
     if not calls:
+        visible(f"[llm] tool_call: model answered in prose, no tool: {(resp.choices[0].message.content or '')[:100]!r}")
         return None
     fn = calls[0].function
     try:

@@ -33,7 +33,9 @@ HOSTED = bool(ADDRESS_BOOK)
 
 
 def _env(name: str, default: str = "") -> str:
-    return (os.getenv(name) or _SECRETS.get(name) or default).strip()
+    # In a hosted bundle our own secrets win: the platform may pre-set variables with the same names (e.g. its own
+    # ASI1_API_KEY), and a 401 from asi1 on the hosted Orchestrator was exactly that.
+    return (_SECRETS.get(name) or os.getenv(name) or default).strip()
 
 
 def _env_int(name: str, default: int) -> int:

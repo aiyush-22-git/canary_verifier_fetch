@@ -264,6 +264,7 @@ def _targets(ctx: Context) -> list[str]:
 
 
 def _save(ctx: Context, address: str, run: dict[str, Any]) -> None:
+    run["_stored"] = True
     ctx.storage.set(f"run:{address}", run)
     targets = _targets(ctx)
     if address not in targets:
@@ -296,6 +297,8 @@ async def _flush(ctx: Context, address: str, run: dict[str, Any], outs: list[Out
     if not run["finished"]:
         _save(ctx, address, run)
         await _send(ctx, address, outs)
+        return
+    if run.get("_stored") and _load(ctx, address) is None:  # the tick and a message handler can both reach this point: only the first reports
         return
     _clear(ctx, address)
     ctx.logger.info(f"[outbound] ProbeResult -> {run['judge_address']} audit={run['audit_id']} exchanges={len(run['exchanges'])}")

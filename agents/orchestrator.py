@@ -173,6 +173,8 @@ def build_orchestrator(registry: Registry | None = None, agent=None):
             if payments.is_free():  # one atomic claim: pressing the button twice still starts one audit
                 if reg.claim_pending(audit_id, sender, "awaiting_payment", "running", payment_ref="free"):
                     await start_run(ctx, sender, plan, "free")
+                else:
+                    await chat.send_text(ctx, sender, "That audit already started. Results appear here as each probe finishes.")
                 return True
             if payments.uses_checkout_link() and payments.enabled():
                 sess = reg.dodo_session(audit_id, sender)

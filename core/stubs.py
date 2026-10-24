@@ -89,7 +89,7 @@ def build_stub_probe(kind: str):
                     events=["ChatAck"] if str(out.msg_id) in acked else [],
                     acked=str(out.msg_id) in acked, latency_ms=int((time.monotonic() - started) * 1000),
                 ))
-            except (TimeoutError, asyncio.TimeoutError):  # distinct classes before Python 3.11
+            except (TimeoutError, asyncio.TimeoutError):  # noqa: UP041 - distinct classes before Python 3.11
                 exchanges.append(Exchange(case=case, sent=list(case.messages[:1]), timed_out=True, acked=False))
         await ctx.send(req.judge_address, ProbeResult(
             audit_id=req.audit_id, kind=req.kind, target_address=req.target_address, exchanges=exchanges))

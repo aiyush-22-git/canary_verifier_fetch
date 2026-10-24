@@ -39,7 +39,7 @@ AckHandler = Callable[[Context, str, ChatAcknowledgement], Awaitable[None]]
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)  # datetime.UTC is 3.11+; hosted agents run 3.10
+    return datetime.now(timezone.utc)  # noqa: UP017 - datetime.UTC is 3.11+; hosted agents run 3.10
 
 
 def text(body: str, *, end_session: bool = False) -> ChatMessage:

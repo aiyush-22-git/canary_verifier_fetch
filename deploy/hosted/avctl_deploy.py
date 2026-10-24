@@ -18,6 +18,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -50,7 +51,7 @@ def known_addresses() -> dict[str, str]:
 
 
 def deploy_one(key: str) -> bool:
-    spec = config.AGENTS[key]
+    spec = type("Spec", (), {"name": build.agent_name(key)})
     src = build.DIST / key
     folder = WORK / key
     folder.mkdir(parents=True, exist_ok=True)
@@ -74,14 +75,22 @@ def main() -> int:
     if "logged-in" not in av("auth", "status").stdout:
         print("Not signed in: run `avctl auth login` first.")
         return 1
-    others = [k for k in build.ENTRY if k != "orchestrator"]
+    others = [k for k in build.ENTRY if k not in ("orchestrator", "tester")]
     keys = [args.only] if args.only else others + ["orchestrator"]
     env = build.read_env()
     env["PAYMENT_RAIL"] = "free"
+    env["TESTER_VERSION"] = str(int(time.time()))  # a new tester build runs its script again
+    env["TESTER_SCRIPT"] = os.environ.get("TESTER_SCRIPT", "")  # "quick": hello, lookup and one audit only
     build.DIST.mkdir(parents=True, exist_ok=True)
     failed = 0
     for key in keys:
-        if key == "orchestrator":
+        if key == "tester":  # the load tester only needs the Orchestrator's address
+            orch = known_addresses().get("Canary-Orchestrator")
+            if not orch:
+                print("Tester not deployed: Canary-Orchestrator is not on the account yet")
+                return 1
+            addresses = {"orchestrator": orch}
+        elif key == "orchestrator":
             names = known_addresses()
             addresses = {k: names[config.AGENTS[k].name] for k in others if config.AGENTS[k].name in names}
             absent = [k for k in others if k not in addresses]
