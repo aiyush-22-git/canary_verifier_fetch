@@ -56,6 +56,13 @@ CREATE TABLE IF NOT EXISTS pending (
     created_at REAL NOT NULL,
     payment_ref TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS dodo_sessions (
+    audit_id TEXT PRIMARY KEY,      -- one hosted checkout per audit; the buyer never chooses the session
+    session_id TEXT NOT NULL,
+    requester TEXT NOT NULL,
+    url TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS payments (
     tx_id TEXT PRIMARY KEY,         -- unique: a replayed transaction id is rejected
     requester TEXT NOT NULL,
@@ -249,6 +256,16 @@ class Registry:
             return True
         except sqlite3.IntegrityError:
             return False
+
+    def save_dodo_session(self, audit_id: str, requester: str, session_id: str, url: str) -> None:
+        self._run(
+            "INSERT OR REPLACE INTO dodo_sessions(audit_id,session_id,requester,url,created_at) VALUES(?,?,?,?,?)",
+            (audit_id, session_id, requester, url, time.time()),
+        )
+
+    def dodo_session(self, audit_id: str, requester: str) -> sqlite3.Row | None:
+        rows = self._all("SELECT * FROM dodo_sessions WHERE audit_id=? AND requester=?", (audit_id, requester))
+        return rows[0] if rows else None
 
     def payment_seen(self, tx_id: str) -> bool:
         return bool(self._all("SELECT 1 FROM payments WHERE tx_id=?", (tx_id,)))

@@ -49,9 +49,18 @@ sleep: `caffeinate -i uv run python run.py` on macOS) until results on Oct 28.
    required deliverable.
 3. If auto-routing never picks it, @mention the address instead and improve the README keywords later.
 
-## 7. Payment spike (Phase 4, 20 minutes)
-Try the rail in `.env` (`PAYMENT_RAIL=fet` or `stripe`) from a fresh ASI:One chat: Pay and run -> the payment UI -> the audit must start, and
-replaying the same payment must be refused. Use the first rail that completes end to end. Never fake a completed payment in the demo.
+## 7. Payments with Dodo (default rail)
+One-time setup in the Dodo dashboard (test mode): create an API key and **one product** (a one-time payment priced at or above
+`AUDIT_PRICE_USD`, default 1.00 USD). Put `DODO_PAYMENTS_API_KEY` and `DODO_PRODUCT_ID` in `.env` and re-run `live.py check` (it fetches the product).
+
+What the buyer sees in ASI:One: audit plan card -> **Pay and run** -> a message with the secure Dodo checkout link plus a card -> they pay in the
+browser (Dodo test card: see Dodo's testing docs) -> **I've paid, start the audit** -> Canary asks Dodo (session, then payment: status `succeeded`,
+belongs to *this* checkout, amount and currency) and only then starts the probes. The Dodo payment id is single-use, so a replay is refused.
+No webhook or public URL is needed: Canary polls on the button press.
+
+`DODO_SEND_REQUESTPAYMENT=1` additionally sends a Payment Protocol `RequestPayment` (method `dodo`, metadata holds the checkout link and session id) for
+*agent* buyers: after paying they `CommitPayment` with the session id as `transaction_id`. Leave it off for human ASI:One chats.
+Stripe (`PAYMENT_RAIL=stripe`) and FET (`fet`) remain as alternatives. Never fake a completed payment in the demo.
 
 ## 8. Paste the cards into the Playground
 https://asi1.ai/developer/card-playground: paste each payload (print them with `uv run python -c "import json,tests.test_cards as t; [print(k, json.dumps(v.payload)) for k,v in t.SPECS.items()]"`).
@@ -62,5 +71,6 @@ https://asi1.ai/developer/card-playground: paste each payload (print them with `
 | `live.py check` says asi1 unreachable | wrong key, quota, or offline; test with `curl https://api.asi1.ai/v1/models -H "Authorization: Bearer $ASI1_API_KEY"` |
 | Orchestrator never replies in ASI:One | mailbox not connected (check the Bureau log), agent inactive on Agentverse, or two machines running the same seed |
 | `register` says 401 | bad `AGENTVERSE_API_KEY` |
+| "I can't see your payment yet" after paying | Dodo still `processing`; wait a few seconds and press the button again. Persistent: `DODO_ENV` doesn't match the key's mode |
 | `register` says 409 | the address already belongs to another account: use fresh seeds |
 | Audit stalls ~100 s then a "didn't finish" card | a probe or target is down; the card offers a free re-run |

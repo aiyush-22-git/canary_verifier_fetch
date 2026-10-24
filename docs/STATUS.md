@@ -26,7 +26,7 @@ Entry points `run.py` expects: `agents.probe.build_probe(kind)` and `agents.targ
 - LOCAL_ONLY agents still self-register on the testnet Almanac (uAgents default) with public dev seeds; harmless, local delivery is used first.
 - Probe/target are stubs: the matrix, hard payment fails and tool-based attacks are untested until B1/B2 land.
 - Cards are schema-validated locally but not yet pasted into the ASI:One Card Playground (needs a human, 5 minutes). `detail` cards omit `sub_options`; if the Playground insists on it, add one to `core/cards.py`.
-- Payments: FET and Stripe code paths written from the fetch-skills reference; untested against a real ledger/Stripe (no funds/keys in CI). Run the Phase 4 payment spike on a real chat before the freeze.
+- Payments: default rail is **Dodo Payments** (hosted checkout link + server-side verification, tested against a fake Dodo API only). FET and Stripe are alternatives, also untested live. Needs `DODO_PAYMENTS_API_KEY` + `DODO_PRODUCT_ID`, then one real test-mode payment from a fresh ASI:One chat (docs/LIVE.md section 7).
 - An all-skipped audit (target silent) is reported with a "couldn't test" notice and is not cached.
 - Architecture image for the README is not made yet (ASCII diagram only).
 
@@ -36,11 +36,11 @@ Full runbook: `docs/LIVE.md`. Helper: `uv run python live.py init-env | check | 
 1. Fill `.env` (`ASI1_API_KEY`, `BACKBOARD_API_KEY`, `AGENTVERSE_API_KEY`, one `SEED_*` per agent, `PAYMENT_RAIL`) on **A1's machine only**.
 2. `uv run python run.py --addresses`, run the Bureau, register the 8 agents on Agentverse, copy the addresses into the README table.
 3. Find the Orchestrator from ASI:One, save the shared chat link, verify the 10-second reply (Phase 1 gate).
-4. Phase 4 payment spike: pick the rail ASI:One completes end to end (Stripe test mode or FET stable-testnet) and set `PAYMENT_RAIL`.
+4. Create the Dodo test-mode product + API key, set `DODO_PAYMENTS_API_KEY` / `DODO_PRODUCT_ID`, make one real test payment.
 5. Paste each card payload into the Card Playground.
 
 ## Env keys
-`ASI1_API_KEY`, `BACKBOARD_API_KEY`, `AGENTVERSE_API_KEY`, `LOCAL_ONLY`, `SEED_*`, `PAYMENT_RAIL`. See `.env.example`.
+`ASI1_API_KEY`, `BACKBOARD_API_KEY`, `AGENTVERSE_API_KEY`, `LOCAL_ONLY`, `SEED_*`, `DODO_PAYMENTS_API_KEY`, `DODO_PRODUCT_ID`, `PAYMENT_RAIL`. See `.env.example`.
 
 ## Agent addresses
 LOCAL_ONLY dev addresses: `LOCAL_ONLY=1 uv run python run.py --addresses`. Real addresses: README, after registration.

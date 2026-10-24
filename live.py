@@ -93,7 +93,19 @@ def check() -> int:
         _row(WARN, "BACKBOARD_API_KEY", "not set: only the Codex target agents need it; stubs run without it")
 
     rail = config.PAYMENT_RAIL
-    if rail == "stripe":
+    if rail == "dodo":
+        have = bool(config.DODO_API_KEY and config.DODO_PRODUCT_ID)
+        if need(have, "Dodo Payments", f"{config.DODO_ENV}, product {config.DODO_PRODUCT_ID}",
+                "set DODO_PAYMENTS_API_KEY and DODO_PRODUCT_ID (create the product in the Dodo dashboard first)"):
+            from core import payments
+
+            try:
+                product = payments._dodo_http("GET", f"/products/{config.DODO_PRODUCT_ID}")
+                price = product.get("price_detail", {}).get("price") or product.get("price")
+                _row(OK, "Dodo product reachable", f"{product.get('name', '?')}, price {price} (minor units); must be >= {config.AUDIT_PRICE_USD} USD")
+            except Exception as exc:
+                need(False, "Dodo product reachable", "", f"{type(exc).__name__}: wrong key, wrong DODO_ENV, or unknown product id")
+    elif rail == "stripe":
         need(bool(config.STRIPE_SECRET_KEY and config.STRIPE_PUBLISHABLE_KEY), "Stripe test keys", "set", "STRIPE_SECRET_KEY / STRIPE_PUBLISHABLE_KEY missing")
     elif rail == "fet":
         _row(OK, "payment rail", f"FET {'stable-testnet' if config.FET_USE_TESTNET else 'mainnet'}, price {config.AUDIT_PRICE_FET} FET")

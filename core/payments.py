@@ -34,15 +34,107 @@ class Verification:
 
 
 def rail_label() -> str:
+    if config.PAYMENT_RAIL == "dodo":
+        return "Dodo Payments " + ("test mode" if config.DODO_ENV == "test_mode" else "live")
     if config.PAYMENT_RAIL == "stripe":
         return "Stripe test mode"
     return "FET stable-testnet" if config.FET_USE_TESTNET else "FET mainnet"
 
 
 def enabled() -> bool:
+    if config.PAYMENT_RAIL == "dodo":
+        return bool(config.DODO_API_KEY and config.DODO_PRODUCT_ID)
     if config.PAYMENT_RAIL == "stripe":
         return bool(config.STRIPE_SECRET_KEY and config.STRIPE_PUBLISHABLE_KEY)
     return config.PAYMENT_RAIL == "fet"
+
+
+def uses_checkout_link() -> bool:
+    """Dodo sells through a hosted checkout link and a server-side check, not a CommitPayment."""
+    return config.PAYMENT_RAIL == "dodo"
+
+
+# --- Dodo Payments (hosted checkout link + our own server-side payment check) ----------------
+
+DODO_TIMEOUT_S = 15
+
+
+def _dodo_base() -> str:
+    return "https://test.dodopayments.com" if config.DODO_ENV == "test_mode" else "https://live.dodopayments.com"
+
+
+def _dodo_http(method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The only function that touches the network for Dodo (tests replace it). Raises on non-2xx."""
+    import httpx
+
+    r = httpx.request(
+        method, _dodo_base() + path, json=body, timeout=DODO_TIMEOUT_S,
+        headers={"Authorization": f"Bearer {config.DODO_API_KEY}"},
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def create_dodo_session(audit_id: str, requester: str) -> tuple[str, str] | None:
+    """A hosted checkout for the audit product. The audit id travels in the session metadata and is
+    re-checked on the payment. Returns (session_id, checkout_url) or None if Dodo refuses."""
+    body: dict[str, Any] = {
+        "product_cart": [{"product_id": config.DODO_PRODUCT_ID, "quantity": 1}],
+        "metadata": {"audit_id": audit_id, "requester": requester},
+    }
+    if config.DODO_RETURN_URL:
+        body["return_url"] = config.DODO_RETURN_URL
+    try:
+        out = _dodo_http("POST", "/checkouts", body)
+    except Exception as exc:
+        log.warning("dodo session create failed: %s", type(exc).__name__)
+        return None
+    session_id, url = out.get("session_id"), out.get("checkout_url")
+    return (session_id, url) if session_id and url else None
+
+
+def verify_dodo(session_id: str, audit_id: str) -> Verification:
+    """Blocking. Two calls: the session (did it produce a succeeded payment?) and the payment itself
+    (status, that it belongs to *this* session, amount, currency, metadata). The session id comes from
+    the registry, never from the buyer's message; the returned tx_id is the Dodo payment id, which the
+    registry makes single-use."""
+    try:
+        session = _dodo_http("GET", f"/checkouts/{session_id}")
+    except Exception as exc:
+        return Verification(False, f"Dodo session lookup failed ({type(exc).__name__})", "dodo")
+    payment_id = session.get("payment_id")
+    if not payment_id or session.get("payment_status") != "succeeded":
+        status = session.get("payment_status") or "not started"
+        return Verification(False, f"the checkout is not paid yet (status: {status})", "dodo")
+    try:
+        pay = _dodo_http("GET", f"/payments/{payment_id}")
+    except Exception as exc:
+        return Verification(False, f"Dodo payment lookup failed ({type(exc).__name__})", "dodo")
+    if pay.get("status") != "succeeded":
+        return Verification(False, f"payment status is {pay.get('status')}", "dodo")
+    if pay.get("checkout_session_id") != session_id:
+        return Verification(False, "the payment belongs to a different checkout", "dodo")
+    if str(pay.get("currency") or "").upper() != "USD":
+        return Verification(False, f"unexpected currency {pay.get('currency')}", "dodo")
+    if int(pay.get("total_amount") or 0) < int(Decimal(config.AUDIT_PRICE_USD) * 100):
+        return Verification(False, "the amount paid is below the audit price", "dodo")
+    meta = pay.get("metadata") or {}
+    if meta.get("audit_id") and meta["audit_id"] != audit_id:
+        return Verification(False, "the payment was made for a different audit", "dodo")
+    return Verification(True, method="dodo", tx_id=str(payment_id))
+
+
+def dodo_request(plan: AuditPlan, wallet_address: str, session_id: str, url: str) -> RequestPayment:
+    """Optional Payment Protocol offer for agent buyers (DODO_SEND_REQUESTPAYMENT): pay at the link, then commit
+    the checkout session id as the transaction id."""
+    return RequestPayment(
+        accepted_funds=[Funds(currency="USD", amount=f"{Decimal(config.AUDIT_PRICE_USD):.2f}", payment_method="dodo")],
+        recipient=wallet_address,
+        deadline_seconds=config.PAYMENT_DEADLINE_S,
+        reference=plan.audit_id,
+        description=f"Canary audit of {plan.target_name}: {len(plan.cases)} live tests",
+        metadata={"checkout_url": url, "checkout_session_id": session_id, "audit_id": plan.audit_id},
+    )
 
 
 # --- request -----------------------------------------------------------------------------
@@ -82,7 +174,7 @@ def _stripe_session(audit_id: str, requester: str, description: str) -> dict[str
 def build_request(plan: AuditPlan, requester: str, wallet_address: str) -> RequestPayment | None:
     """RequestPayment for an audit plan, or None if the rail is not usable (caller shows a notice).
     `reference` is the audit id: the commit is matched to pending server-side state through it."""
-    if not enabled():
+    if not enabled() or uses_checkout_link():
         return None
     desc = f"Canary audit of {plan.target_name}: {len(plan.cases)} live tests"
     metadata: dict[str, Any] = {"agent": "Canary-Orchestrator", "audit_id": plan.audit_id}
@@ -181,13 +273,20 @@ def _verify_stripe(session_id: str, audit_id: str, requester: str) -> Verificati
     return Verification(True, method="stripe", tx_id=session_id)
 
 
-def verify_commit(commit: CommitPayment, requester: str, audit_id: str, wallet_address: str) -> Verification:
+def verify_commit(
+    commit: CommitPayment, requester: str, audit_id: str, wallet_address: str, dodo_session: str = ""
+) -> Verification:
     """Blocking. Checks method, currency, amount and the transaction itself. Never trusts the
     buyer's claimed amount: the price comes from config."""
     tx_id = (commit.transaction_id or "").strip()
     method = commit.funds.payment_method
     if not tx_id:
         return Verification(False, "missing transaction id")
+    if config.PAYMENT_RAIL == "dodo":
+        # The only transaction id we accept is the checkout session we created for this audit.
+        if method != "dodo" or not dodo_session or tx_id != dodo_session:
+            return Verification(False, "not the checkout session issued for this audit")
+        return verify_dodo(dodo_session, audit_id)
     if config.PAYMENT_RAIL == "stripe":
         if method != "stripe":
             return Verification(False, f"unsupported payment method {method}")

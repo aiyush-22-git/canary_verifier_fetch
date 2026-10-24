@@ -130,6 +130,25 @@ def build_orchestrator(registry: Registry | None = None):
                 action="retry_audit", cta_label="Re-run my audit", audit_id=audit_id,
             )
 
+    # --- settling a verified payment -----------------------------------------------------------------
+
+    async def settle(
+        ctx: Context, sender: str, row, result: payments.Verification, commit_tx: str | None = None
+    ) -> str | None:
+        """A verified payment starts exactly one audit. Returns None on success, else why it was refused.
+        `result.tx_id` is the provider's own payment id, so the same payment can never pay twice."""
+        audit_id = row["audit_id"]
+        if not reg.record_payment(result.tx_id, sender, audit_id, result.method):
+            ctx.logger.warning(f"[state] replayed payment {result.tx_id} rejected")
+            return "This payment was already used for an audit."
+        if not reg.claim_pending(audit_id, sender, "awaiting_payment", "running", payment_ref=result.tx_id):
+            return "This audit was already paid or cancelled."
+        if commit_tx is not None:  # Payment Protocol buyers get CompletePayment before the audit starts talking
+            ctx.logger.info(f"[outbound] CompletePayment -> {sender} tx={commit_tx}")
+            await ctx.send(sender, CompletePayment(transaction_id=commit_tx))
+        await start_run(ctx, sender, AuditPlan.parse_raw(row["plan_json"]), result.tx_id)
+        return None
+
     # --- selections ------------------------------------------------------------------------------
 
     async def handle_selection(ctx: Context, sender: str, sel: dict) -> bool:
@@ -146,6 +165,27 @@ def build_orchestrator(registry: Registry | None = None):
             if not reg.is_allowed(plan.target_address):
                 await notice(ctx, sender, "Agent not allowlisted", "The owner has not opted in.", "Ask the owner to verify it.")
                 return True
+            if payments.uses_checkout_link() and payments.enabled():
+                sess = reg.dodo_session(audit_id, sender)
+                if sess:  # pressing the button twice must not create a second checkout
+                    session_id, url = sess["session_id"], sess["url"]
+                else:
+                    made = await asyncio.to_thread(payments.create_dodo_session, audit_id, sender)
+                    if made is None:
+                        await notice(
+                            ctx, sender, "I couldn't open a checkout",
+                            f"{payments.rail_label()} didn't accept the request.",
+                            "Try again in a moment. Nothing was charged.",
+                            action="pay_and_run", cta_label="Try again", audit_id=audit_id,
+                        )
+                        return True
+                    session_id, url = made
+                    reg.save_dodo_session(audit_id, sender, session_id, url)
+                await chat.send_text(ctx, sender, f"Secure checkout ({payments.rail_label()}), {plan.price_usd} USD: {url}")
+                await chat.send_card(ctx, sender, *cards.payment_link(plan, url, rail_label=payments.rail_label()))
+                if config.DODO_SEND_REQUESTPAYMENT:
+                    await ctx.send(sender, payments.dodo_request(plan, wallet, session_id, url))
+                return True
             req = payments.build_request(plan, sender, wallet)
             if req is None:
                 await notice(
@@ -157,6 +197,25 @@ def build_orchestrator(registry: Registry | None = None):
                 return True
             ctx.logger.info(f"[outbound] RequestPayment -> {sender} audit={audit_id}")
             await ctx.send(sender, req)
+            return True
+
+        if action == "check_payment":
+            row = reg.get_pending(audit_id, sender)
+            sess = reg.dodo_session(audit_id, sender) if row else None
+            if not row or row["state"] != "awaiting_payment" or not sess:
+                await notice(ctx, sender, "No payment is open for that audit",
+                             "The plan expired, was cancelled, or was already paid.",
+                             "Ask me to audit the agent again if you still want a fresh audit.")
+                return True
+            result = await asyncio.to_thread(payments.verify_dodo, sess["session_id"], audit_id)
+            if not result.ok:
+                await notice(ctx, sender, "I can't see your payment yet", result.reason,
+                             "Finish paying at the checkout link, wait a few seconds, then press the button again.",
+                             action="check_payment", cta_label="Check again", audit_id=audit_id)
+                return True
+            refused = await settle(ctx, sender, row, result)
+            if refused:
+                await notice(ctx, sender, "I can't start that audit", refused, "Ask me for a new audit plan.")
             return True
 
         if action == "cancel":
@@ -280,24 +339,21 @@ def build_orchestrator(registry: Registry | None = None):
             await cancel(ctx, sender, tx, "No audit is waiting for payment from you.")
             return
         audit_id = row["audit_id"]
+        sess = reg.dodo_session(audit_id, sender)
         if reg.payment_seen(tx):
             ctx.logger.warning(f"[state] replayed transaction {tx} rejected")
             await cancel(ctx, sender, tx, "This transaction id was already used.")
             return
-        result = await asyncio.to_thread(payments.verify_commit, msg, sender, audit_id, wallet)
+        result = await asyncio.to_thread(
+            payments.verify_commit, msg, sender, audit_id, wallet, sess["session_id"] if sess else ""
+        )
         if not result.ok:
             ctx.logger.warning(f"[state] payment not verified tx={tx}: {result.reason}")
             await cancel(ctx, sender, tx, f"Payment not verified: {result.reason}")
             return
-        if not reg.record_payment(tx, sender, audit_id, result.method):
-            await cancel(ctx, sender, tx, "This transaction id was already used.")
-            return
-        if not reg.claim_pending(audit_id, sender, "awaiting_payment", "running", payment_ref=tx):
-            await cancel(ctx, sender, tx, "This audit was already paid or cancelled.")
-            return
-        ctx.logger.info(f"[outbound] CompletePayment -> {sender} tx={tx}")
-        await ctx.send(sender, CompletePayment(transaction_id=tx))
-        await start_run(ctx, sender, AuditPlan.parse_raw(row["plan_json"]), tx)
+        refused = await settle(ctx, sender, row, result, commit_tx=tx)
+        if refused:
+            await cancel(ctx, sender, tx, refused)
 
     @payment_proto.on_message(RejectPayment)
     async def on_reject(ctx: Context, sender: str, msg: RejectPayment) -> None:

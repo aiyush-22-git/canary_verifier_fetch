@@ -44,6 +44,7 @@ ASI1_FALLBACK_MODEL = _env("ASI1_FALLBACK_MODEL", "asi1-mini")
 BACKBOARD_API_KEY = _env("BACKBOARD_API_KEY")
 AGENTVERSE_API_KEY = _env("AGENTVERSE_API_KEY")
 DB_PATH = _env("CANARY_DB", "canary.db")
+PORT_BASE = _env_int("CANARY_PORT_BASE", 8100)  # agents use PORT_BASE+0..7; move it if 8100 is taken
 NETWORK = _env("AGENT_NETWORK", "testnet")
 
 # --- audit behaviour ---------------------------------------------------------
@@ -59,11 +60,18 @@ PENDING_AUDIT_TTL_S = 1800
 
 AUDIT_PRICE_USD = _env("AUDIT_PRICE_USD", "1.00")
 AUDIT_PRICE_FET = _env("AUDIT_PRICE_FET", "0.001")
-PAYMENT_RAIL = _env("PAYMENT_RAIL", "fet")  # fet | stripe | none (none = dev only, never in the demo)
+PAYMENT_RAIL = _env("PAYMENT_RAIL", "dodo")  # dodo | fet | stripe | none (none: payments disabled, never faked)
 FET_USE_TESTNET = _env_bool("FET_USE_TESTNET", True)
 STRIPE_SECRET_KEY = _env("STRIPE_SECRET_KEY")
 STRIPE_PUBLISHABLE_KEY = _env("STRIPE_PUBLISHABLE_KEY")
 PAYMENT_DEADLINE_S = _env_int("PAYMENT_DEADLINE_S", 300)
+# Dodo Payments: hosted checkout link + our own server-side check. The product (price >= AUDIT_PRICE_USD)
+# is created once in the Dodo dashboard; test mode uses https://test.dodopayments.com.
+DODO_API_KEY = _env("DODO_PAYMENTS_API_KEY")
+DODO_PRODUCT_ID = _env("DODO_PRODUCT_ID")
+DODO_ENV = _env("DODO_ENV", "test_mode")  # test_mode | live_mode
+DODO_RETURN_URL = _env("DODO_RETURN_URL")  # optional: where Dodo sends the buyer after paying
+DODO_SEND_REQUESTPAYMENT = _env_bool("DODO_SEND_REQUESTPAYMENT")  # also offer a Payment Protocol RequestPayment (agent buyers)
 
 # --- agents ------------------------------------------------------------------
 
@@ -79,14 +87,14 @@ class AgentSpec:
 AGENTS: dict[str, AgentSpec] = {
     spec.key: spec
     for spec in [
-        AgentSpec("orchestrator", "Canary-Orchestrator", 8100, "orchestrator"),
-        AgentSpec("judge", "Canary-Judge", 8101, "judge"),
-        AgentSpec("probe-injection", "Canary-Probe-Injection", 8102, "probe"),
-        AgentSpec("probe-leak", "Canary-Probe-Leak", 8103, "probe"),
-        AgentSpec("probe-payment", "Canary-Probe-Payment", 8104, "probe"),
-        AgentSpec("target-leaky", "ShopBot-Leaky", 8105, "target"),
-        AgentSpec("target-overcharger", "ShopBot-Overcharge", 8106, "target"),
-        AgentSpec("target-solid", "ShopBot-Solid", 8107, "target"),
+        AgentSpec("orchestrator", "Canary-Orchestrator", PORT_BASE + 0, "orchestrator"),
+        AgentSpec("judge", "Canary-Judge", PORT_BASE + 1, "judge"),
+        AgentSpec("probe-injection", "Canary-Probe-Injection", PORT_BASE + 2, "probe"),
+        AgentSpec("probe-leak", "Canary-Probe-Leak", PORT_BASE + 3, "probe"),
+        AgentSpec("probe-payment", "Canary-Probe-Payment", PORT_BASE + 4, "probe"),
+        AgentSpec("target-leaky", "ShopBot-Leaky", PORT_BASE + 5, "target"),
+        AgentSpec("target-overcharger", "ShopBot-Overcharge", PORT_BASE + 6, "target"),
+        AgentSpec("target-solid", "ShopBot-Solid", PORT_BASE + 7, "target"),
     ]
 }
 PROBE_KINDS = ("injection", "leak", "payment")

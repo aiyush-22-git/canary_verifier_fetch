@@ -158,3 +158,122 @@ async def test_owner_verification_flow(world):
     client.click(card["payload"]["approve_cta"]["selection"])  # no code in a profile yet: refused
     assert "couldn't find the code" in str((await client.card("detail", after=n))["payload"])
     assert not reg.is_allowed(addr)
+
+
+# --- Dodo Payments rail: hosted checkout link + server-side verification -------------------------
+
+
+@pytest.fixture
+def dodo(monkeypatch):
+    from tests.fake_dodo import FakeDodo
+
+    fake = FakeDodo()
+    monkeypatch.setattr(config, "PAYMENT_RAIL", "dodo")
+    monkeypatch.setattr(config, "DODO_API_KEY", "dodo_test_key")
+    monkeypatch.setattr(config, "DODO_PRODUCT_ID", "pdt_audit")
+    monkeypatch.setattr(payments, "_dodo_http", fake)
+    return fake
+
+
+async def plan_for(client: E2EClient, name: str) -> dict:
+    n = len(client.inbox)
+    client.say(f"Audit {name}")
+    plan = await client.card("review", after=n)
+    return plan["payload"]["approve_cta"]["selection"]
+
+
+async def test_dodo_paid_audit_end_to_end(world, dodo):
+    client, reg = world
+    t0 = time.monotonic()
+    sel = await plan_for(client, "ShopBot-Leaky")
+    n, requests_before = len(client.inbox), len(client.payment_requests)
+    client.click(sel)
+    link = await client.text_containing("https://test.checkout.dodopayments.com/session/", after=n)
+    session_id = link.text.rsplit("/", 1)[1].strip()
+    pay_card = await client.card("detail", after=n)
+    check = pay_card["payload"]["ctas"][0]["selection"]
+    assert check == {"action": "check_payment", "audit_id": sel["audit_id"]}
+    assert len(client.payment_requests) == requests_before, "no RequestPayment unless DODO_SEND_REQUESTPAYMENT is on"
+
+    # pressing the button before paying starts nothing
+    m = len(client.inbox)
+    client.click(check)
+    assert "can't see your payment" in str((await client.card("detail", after=m))["payload"])
+    assert reg.get_pending(sel["audit_id"], client.agent.address)["state"] == "awaiting_payment"
+
+    # pressing "pay and run" again reuses the same checkout instead of opening a second one
+    m = len(client.inbox)
+    client.click(sel)
+    again = await client.text_containing("https://test.checkout.dodopayments.com/session/", after=m)
+    assert again.text.rsplit("/", 1)[1].strip() == session_id and len(dodo.sessions) == 1
+
+    pid = dodo.pay(session_id)
+    m = len(client.inbox)
+    client.click(check)
+    score = await client.card("custom", after=m, timeout=90)
+    assert time.monotonic() - t0 < 90
+    assert score["payload"]["root"]["children"][0]["children"][0]["value"] == "F"
+    assert reg.get_verdict(sel["audit_id"]).grade == "F"
+    assert reg.payment_seen(pid)
+
+    # the same button again is a replay: nothing runs twice
+    m = len(client.inbox)
+    client.click(check)
+    assert "No payment is open" in str((await client.card("detail", after=m))["payload"])
+
+
+async def test_dodo_underpaid_checkout_does_not_start_an_audit(world, dodo):
+    client, reg = world
+    sel = await plan_for(client, "ShopBot-Solid")
+    n = len(client.inbox)
+    client.click(sel)
+    link = await client.text_containing("dodopayments.com/session/", after=n)
+    dodo.pay(link.text.rsplit("/", 1)[1].strip(), amount=10)
+    m = len(client.inbox)
+    client.click({"action": "check_payment", "audit_id": sel["audit_id"]})
+    assert "below the audit price" in str((await client.card("detail", after=m))["payload"])
+    assert reg.get_pending(sel["audit_id"], client.agent.address)["state"] == "awaiting_payment"
+
+
+async def test_dodo_forged_check_payment_starts_nothing(world, dodo):
+    client, _ = world
+    n = len(client.inbox)
+    client.click({"action": "check_payment", "audit_id": "deadbeef0000"})
+    assert "No payment is open" in str((await client.card("detail", after=n))["payload"])
+    assert not dodo.sessions
+
+
+async def test_dodo_down_gives_a_retry_card_not_a_crash(world, dodo):
+    client, _ = world
+    sel = await plan_for(client, "ShopBot-Solid")
+    dodo.fail = True
+    n = len(client.inbox)
+    client.click(sel)
+    card = await client.card("detail", after=n)
+    assert "couldn't open a checkout" in str(card["payload"]) and "Nothing was charged" in str(card["payload"])
+
+
+async def test_dodo_agent_buyers_can_commit_the_checkout_session_id(world, dodo, monkeypatch):
+    monkeypatch.setattr(config, "DODO_SEND_REQUESTPAYMENT", True)
+    client, reg = world
+    sel = await plan_for(client, "ShopBot-Overcharge")
+    reqs, cancels = len(client.payment_requests), len(client.cancels)
+    client.click(sel)
+    await client.wait(lambda: len(client.payment_requests) > reqs)
+    request = client.payment_requests[-1]
+    assert request.accepted_funds[0].payment_method == "dodo" and request.reference == sel["audit_id"]
+    session_id = request.metadata["checkout_session_id"]
+
+    client.commit(request, "0xmade-up-hash")  # not the issued session
+    await client.wait(lambda: len(client.cancels) > cancels)
+    assert "issued for this audit" in client.cancels[-1].reason
+
+    client.commit(request, session_id)  # right session, not paid yet
+    await client.wait(lambda: len(client.cancels) > cancels + 1)
+    assert "not paid yet" in client.cancels[-1].reason
+
+    dodo.pay(session_id)
+    completes = len(client.completes)
+    client.commit(request, session_id)
+    await client.wait(lambda: len(client.completes) > completes)
+    assert reg.get_pending(sel["audit_id"], client.agent.address)["state"] in {"running", "done"}

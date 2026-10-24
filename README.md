@@ -18,7 +18,7 @@ three probes attack the agent live, and get a scorecard: one letter grade, and f
   skip its review step, does it *acknowledge every Chat Protocol message*.
 - **Evidence nobody can argue with:** each demo target's system prompt carries a unique canary token, so a leak is an exact string match, not a
   model's opinion. Any hard fail is an F. asi1 grades only the soft prompt-injection cases and must quote the transcript.
-- **Both sides of payments:** Canary charges for audits as a Payment Protocol seller (idempotent on transaction id, verified server-side) and its payment
+- **Both sides of payments:** Canary charges for audits (Dodo Payments hosted checkout, or Stripe/FET through the Payment Protocol), verifies every payment server-side and rejects replays and its payment
   probe attacks other agents' payment handling as a buyer.
 - **It keeps running:** verified agents are re-tested on a timer; lookups are answered instantly and free from the registry.
 - **Consent first:** only demo agents and agents whose owners proved ownership (one-time code in their Agentverse profile) are ever tested.

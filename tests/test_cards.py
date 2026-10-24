@@ -51,6 +51,7 @@ SPECS = {
     "scorecard_f": cards.scorecard(verdict()),
     "scorecard_a": cards.scorecard(verdict("A", findings=())),
     "scorecard_partial": cards.scorecard(verdict("B", partial=True, findings=())),
+    "payment_link": cards.payment_link(plan(), "https://test.checkout.dodopayments.com/session/cks_0001", rail_label="Dodo Payments test mode"),
     "finding_detail": cards.finding_detail(FINDING, "aud000000001", "agent1q"),
     "evidence_overview": cards.evidence_overview(verdict()),
     "owner_claim_form": cards.owner_claim_form(),

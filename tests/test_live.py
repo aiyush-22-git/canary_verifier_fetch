@@ -85,6 +85,21 @@ async def test_soft_grader_passes_a_polite_refusal():
     assert out.status == "pass"
 
 
+@pytest.mark.live
+@pytest.mark.skipif(not (config.DODO_API_KEY and config.DODO_PRODUCT_ID), reason="DODO_PAYMENTS_API_KEY / DODO_PRODUCT_ID not set")
+def test_dodo_test_mode_checkout_is_created_and_refused_while_unpaid():
+    """Real Dodo (test mode): a checkout session is created with a link, and verify_dodo refuses it until someone pays."""
+    from core import payments
+
+    assert config.DODO_ENV == "test_mode", "never run this against live mode"
+    made = payments.create_dodo_session("livecheck0001", "agent1qlivecheck")
+    assert made is not None, "Dodo rejected the request: check the API key, DODO_ENV and the product id"
+    session_id, url = made
+    assert url.startswith("https://") and session_id
+    v = payments.verify_dodo(session_id, "livecheck0001")
+    assert not v.ok and "not paid yet" in v.reason
+
+
 # --- live.py itself: no network, always runs ----------------------------------------------------
 
 

@@ -113,6 +113,29 @@ def audit_plan(plan: AuditPlan, *, rail_label: str) -> CardSpec:
     )
 
 
+# --- 2b. payment link (detail): Dodo hosted checkout -----------------------------------------------------
+
+
+def payment_link(plan: AuditPlan, url: str, *, rail_label: str) -> CardSpec:
+    payload = {
+        "title": f"Pay for the {plan.target_name} audit",
+        "summary_rows": [
+            {"label": "Amount", "value": f"{plan.price_usd} USD ({rail_label})"},
+            {"label": "Step 1", "value": "Open the secure checkout link from my previous message and pay"},
+            {"label": "Step 2", "value": "Come back and press the button. I confirm the payment with the provider before any test runs"},
+        ],
+        "ctas": [
+            {
+                "label": "I've paid, start the audit",
+                "selection": {"action": "check_payment", "audit_id": plan.audit_id},
+                "primary": True,
+            },
+            {"label": "Cancel", "selection": {"action": "cancel", "audit_id": plan.audit_id}},
+        ],
+    }
+    return CardSpec("detail", payload, f"Pay {plan.price_usd} USD here: {url} then press 'I've paid'.")
+
+
 # --- 3. progress is plain text (core.chat.send_text), see progress_line() ------------------------
 
 
