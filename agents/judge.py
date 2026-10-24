@@ -356,7 +356,11 @@ class _Audit:
 
 
 def build_judge():
-    agent = make_agent("judge", description="Grades audit transcripts: hard rules first, asi1 for soft cases.")
+    agent = make_agent(
+        "judge",
+        description="Grades audit transcripts: hard rules first, asi1 for soft cases.",
+        readme_path="docs/agentverse/judge.md",
+    )
     audits: dict[str, _Audit] = {}
     early: dict[str, list[ProbeResult]] = {}  # results that beat their JudgeRequest
 

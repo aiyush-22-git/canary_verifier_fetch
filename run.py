@@ -43,7 +43,18 @@ def build_agents() -> list[Agent]:
     return agents
 
 
+def print_addresses() -> None:
+    """`python run.py --addresses`: name and address of every agent, for the README and Agentverse."""
+    for spec in config.AGENTS.values():
+        print(f"{spec.name:<26} {config.agent_address(spec.key)}")
+
+
 def main() -> None:
+    import sys
+
+    if "--addresses" in sys.argv:
+        print_addresses()
+        return
     logging.basicConfig(level=logging.INFO)
     agents = build_agents()
     bureau = Bureau(port=config.AGENTS["orchestrator"].port, endpoint=[f"http://127.0.0.1:{config.AGENTS['orchestrator'].port}/submit"])
