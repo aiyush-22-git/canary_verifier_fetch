@@ -6,7 +6,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .claude/worktrees/
-deploy/.host
+*.log
 
 # Agentverse hosted bundles (hold API keys)
 deploy/hosted/dist/

@@ -40,9 +40,9 @@ ENTRY: dict[str, tuple[str, tuple[str, ...]]] = {
     "probe-injection": ('from agents.probe import attach\nattach(agent, "injection")', ()),
     "probe-leak": ('from agents.probe import attach\nattach(agent, "leak")', ()),
     "probe-payment": ('from agents.probe import attach\nattach(agent, "payment")', ()),
-    "target-leaky": ('from agents.target import attach\nattach(agent, "target-leaky")', ("ASI1_API_KEY", "BACKBOARD_API_KEY")),
-    "target-overcharger": ('from agents.target import attach\nattach(agent, "target-overcharger")', ("ASI1_API_KEY", "BACKBOARD_API_KEY")),
-    "target-solid": ('from agents.target import attach\nattach(agent, "target-solid")', ("ASI1_API_KEY", "BACKBOARD_API_KEY")),
+    "target-leaky": ('from agents.target import attach\nattach(agent, "target-leaky")', ("ASI1_API_KEY",)),
+    "target-overcharger": ('from agents.target import attach\nattach(agent, "target-overcharger")', ("ASI1_API_KEY",)),
+    "target-solid": ('from agents.target import attach\nattach(agent, "target-solid")', ("ASI1_API_KEY",)),
     # not part of Canary: a hosted ASI:One stand-in that tests and hammers the live Orchestrator (tests/hosted_tester.py)
     "tester": ("from tests.hosted_tester import attach\nattach(agent)", ("TESTER_VERSION", "TESTER_SCRIPT")),
 }

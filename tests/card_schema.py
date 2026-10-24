@@ -1,7 +1,7 @@
 """Validator for the documented ASI:One card schemas (predefined kinds + custom element tree).
 
 Stands in for the Card Playground in CI; a card that passes here must still be pasted into
-the Playground once by hand before the demo (docs/STATUS.md tracks that).
+the Playground once by hand before the demo.
 """
 
 from __future__ import annotations

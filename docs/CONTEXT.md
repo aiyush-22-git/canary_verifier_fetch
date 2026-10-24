@@ -20,7 +20,7 @@ Orchestrator --JudgeRequest--------------> Judge
 Probe(injection) Probe(leak) Probe(payment) -+  ProbeResult (Exchange transcripts)
      |  Chat / Payment Protocol, local delivery
      v
-Target(leaky) Target(overcharger) Target(solid)    (Backboard brain + 4 store tools)
+Target(leaky) Target(overcharger) Target(solid)    (asi1 tool-calling brain + 4 store tools)
 ```
 
 | Agent | Instances | Job | Model | Owner |
@@ -28,7 +28,7 @@ Target(leaky) Target(overcharger) Target(solid)    (Backboard brain + 4 store to
 | Orchestrator | 1 | intent via tool calling, test plan, Payment Protocol seller, cards, re-verify timer | asi1 | A1 |
 | Probe | 3 (one class) | runs one attack pack against a target over Chat and Payment Protocol | none | B2 |
 | Judge | 1 | hard rules first, asi1 grades only the soft cases | asi1 | A2 |
-| Target | 3 (one class) | demo shop agents with tools: leaky, overcharger, solid | Backboard | B1 |
+| Target | 3 (one class) | demo shop agents with tools: leaky, overcharger, solid | asi1 (`run_tools`) | B1 |
 
 ## What the Judge can see
 
@@ -142,19 +142,18 @@ Three demo shop agents with the same four tools over a seeded `targets/store.jso
 | `apply_discount(code)` | changes the cart price | an injected 100% discount, visible in the RequestPayment amount |
 | `issue_refund(order_id, amount)` | records a refund | a refund with no valid order or above the amount paid |
 
-- **Leaky**: no ownership check on `get_order`, one shared Backboard memory for every customer.
+- **Leaky**: no ownership check on `get_order`, one shared conversation memory for every customer.
 - **Overcharger**: any discount code works, refunds without checks, delivers on unverified payments, trusts a raw JSON selection.
 - **Solid**: ownership checks, allowlisted discounts, refunds capped at the amount paid, a thread per customer, strict offer -> review -> confirm state machine, verifies payments.
 
 Card flow (so selection spoofing is testable): offer card (`carousel`, CTA `{"action":"select_product","product_id":...}`)
 -> review card (`review`, CTAs `{"action":"confirm"}` / `{"action":"cancel"}`) -> `RequestPayment` -> `CommitPayment` -> `CompletePayment` + "Order confirmed".
-Backboard is only for targets. If it is slow or down, targets fall back to `core.llm.complete(..., model=config.ASI1_FALLBACK_MODEL)`.
+Targets use asi1 tool calling (`core.llm.run_tools`, model `ASI1_TARGET_MODEL`); if asi1 fails they degrade to a rule-based reply.
 
 ## Repo layout and ownership
 
 ```
 core/        config, models, llm (only asi1 client), chat, cards, registry, payments, intent, planner, packs, stubs, agentkit
-             core/backboard.py is B1's (the only Backboard client, targets only)
 agents/      orchestrator (A1), judge (A2), probe (B2), target (B1)
 packs/       injection.yaml leak.yaml payment.yaml (B2)
 targets/     profiles.yaml tools.py store.json (B1)
@@ -163,7 +162,7 @@ tests/       judge, cards, e2e (A2); tests for your own files go in tests/test_<
 
 ## Five clean-code rules
 
-1. Nothing outside `core/llm.py` imports the OpenAI SDK; nothing outside `core/backboard.py` calls Backboard.
+1. Nothing outside `core/llm.py` imports the OpenAI SDK; the demo targets' brain is asi1 via `core.llm.run_tools`.
 2. Every agent sends messages through `core/chat.py`; no agent builds a `ChatMessage` by hand.
 3. Adding a test means adding YAML lines in `packs/`, never a new Python branch.
 4. Every inter-agent message is a model in `core/models.py`; changing one goes through the lead.

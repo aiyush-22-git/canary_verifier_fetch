@@ -5,23 +5,23 @@ description: Canary's repo rules. Load first, in every session and for every sub
 
 # Canary conventions
 
-Read `docs/CONTEXT.md` (architecture, event strings, shared vocabulary) and `docs/STATUS.md` (what is merged, what is next) first.
+Read `docs/CONTEXT.md` (architecture, event strings, shared vocabulary) and `docs/ARCHITECTURE.md` first.
 
 ## The five rules
 
-1. Nothing outside `core/llm.py` imports the OpenAI SDK; nothing outside `core/backboard.py` calls Backboard.
+1. Nothing outside `core/llm.py` imports the OpenAI SDK; the demo targets' brain is asi1 via `core.llm.run_tools`.
 2. Every agent sends messages through `core/chat.py`; no agent builds a `ChatMessage` by hand.
 3. Adding a test means adding YAML lines in `packs/`, never a new Python branch.
-4. Every inter-agent message is a model in `core/models.py`; changing one goes through the lead (PR labelled `contract`, announced in `docs/STATUS.md`).
+4. Every inter-agent message is a model in `core/models.py`; changing one goes through the lead (PR labelled `contract`).
 5. Handlers only route: they call `core/` functions and send the result.
 
 ## Ownership (write only inside your area)
 
 | Area | Owner |
 |---|---|
-| `core/` except `backboard.py`, `cards.py`; `agents/orchestrator.py`; `run.py`; `README.md`; `AGENTS.md`; `docs/` | lead (A1) |
+| `core/` except `cards.py`; `agents/orchestrator.py`; `run.py`; `README.md`; `AGENTS.md`; `docs/` | lead (A1) |
 | `agents/judge.py`, `core/cards.py`, `tests/` | A2 |
-| `agents/target.py`, `targets/`, `core/backboard.py` | B1 (Codex, PRs only) |
+| `agents/target.py`, `targets/` | B1 (Codex, PRs only) |
 | `agents/probe.py`, `packs/` | B2 (Codex, PRs only) |
 
 ## Contracts you will use

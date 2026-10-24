@@ -62,7 +62,6 @@ ASI1_FALLBACK_MODEL = _env("ASI1_FALLBACK_MODEL", "asi1-mini")
 ASI1_TARGET_MODEL = _env("ASI1_TARGET_MODEL", "asi1-mini")  # demo targets' brain (tool-capable, fastest)
 LLM_TOKEN_CAP = _env_int("LLM_TOKEN_CAP", 1_000_000)  # total asi1 tokens across every call
 LLM_USAGE_FILE = _env("LLM_USAGE_FILE", os.path.join(os.path.expanduser("~"), ".canary", "asi1_usage.json"))
-BACKBOARD_API_KEY = _env("BACKBOARD_API_KEY")
 AGENTVERSE_API_KEY = _env("AGENTVERSE_API_KEY")
 DB_PATH = _env("CANARY_DB", "canary.db")
 PORT_BASE = _env_int("CANARY_PORT_BASE", 8100)  # agents use PORT_BASE+0..7; move it if 8100 is taken

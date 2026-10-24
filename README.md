@@ -62,7 +62,8 @@ another terminal).
 
 ## Going live
 
-`uv run python live.py init-env && uv run python live.py check && uv run python live.py register && uv run python run.py`. Details in `docs/LIVE.md`. To keep it running until Oct 28 on an AWS Lightsail VM: `deploy/lightsail.sh && deploy/deploy.sh` (see `docs/DEPLOY.md`).
+Submission: the 8 agents run as Agentverse hosted agents (`deploy/hosted/avctl_deploy.py`, or paste by hand: `docs/HOSTED.md`) and are
+used from ASI:One. Local mailbox alternative: `uv run python live.py init-env && uv run python live.py check && uv run python live.py register && uv run python run.py`. Details in `docs/LIVE.md`.
 
 ## Scope
 
@@ -70,4 +71,4 @@ Hackathon scope, not SaaS: one process, one SQLite file, no login, no web dashbo
 
 ## Team and layout
 
-See `AGENTS.md` (ownership, rules, commands) and `docs/STATUS.md` (what's merged, what's next).
+See `docs/ARCHITECTURE.md` (agents, asi1 call sites, audit flow), `docs/HOSTED.md` (Agentverse deploy), `docs/LIVE_TEST.md` (live run) and `AGENTS.md` (rules, commands).

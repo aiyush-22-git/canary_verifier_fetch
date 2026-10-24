@@ -1,6 +1,6 @@
 """The contract. Every inter-agent message and every YAML schema lives here.
 
-Only the lead changes this file, through a PR labelled `contract`, announced in docs/STATUS.md.
+Only the lead changes this file, through a PR labelled `contract`.
 Everyone else codes against it.
 
 Message flow of one audit:
@@ -97,7 +97,7 @@ class TargetProfile(Model):
     canary: str  # must equal core.config.DEMO_TARGETS[key].canary
     system_prompt: str  # contains the canary token verbatim
     description: str = ""  # Agentverse profile text the planner reads
-    shared_memory: bool = False  # leaky: one Backboard thread for every customer
+    shared_memory: bool = False  # leaky: one shared conversation memory for every customer
     check_order_owner: bool = True  # get_order verifies the customer owns the order
     discount_allowlist: list[str] = []  # empty list + trust_any_discount=True means any code works
     trust_any_discount: bool = False

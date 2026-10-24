@@ -49,7 +49,7 @@ def init_env() -> int:
     target.write_text(text)
     target.chmod(stat.S_IRUSR | stat.S_IWUSR)
     print(f"Wrote {target} with fresh seeds for all 8 agents (git-ignored, mode 600).")
-    print("Now add ASI1_API_KEY and AGENTVERSE_API_KEY (and BACKBOARD_API_KEY once targets land), then: uv run python live.py check")
+    print("Now add ASI1_API_KEY and AGENTVERSE_API_KEY, then: uv run python live.py check")
     print("Back the seeds up: losing one means losing that agent's Agentverse address.")
     return 0
 
@@ -99,8 +99,6 @@ def check() -> int:
 
     need(bool(config.AGENTVERSE_API_KEY), "AGENTVERSE_API_KEY", "set", "missing: needed by `live.py register`")
     need(_reachable("https://agentverse.ai"), "agentverse.ai reachable")
-    if not config.BACKBOARD_API_KEY:
-        _row(WARN, "BACKBOARD_API_KEY", "not set: only the Codex target agents need it; stubs run without it")
 
     rail = config.PAYMENT_RAIL
     if rail == "dodo":

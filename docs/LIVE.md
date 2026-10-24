@@ -10,7 +10,7 @@ Run this on **one machine only** (A1's). Codex machines stay on `LOCAL_ONLY=1`. 
 ```
 uv run python live.py init-env      # writes .env with a fresh random seed per agent, LOCAL_ONLY=0, mode 600
 ```
-Open `.env` and add `ASI1_API_KEY` and `AGENTVERSE_API_KEY` (and `BACKBOARD_API_KEY` once the Codex targets land). **Back up the seeds**: a seed
+Open `.env` and add `ASI1_API_KEY` and `AGENTVERSE_API_KEY`. **Back up the seeds**: a seed
 is an agent's identity; lose it and you lose its Agentverse address.
 
 ## 2. Preflight

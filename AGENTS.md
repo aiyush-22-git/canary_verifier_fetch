@@ -1,18 +1,18 @@
-Read docs/CONTEXT.md and docs/STATUS.md before any task.
+Read docs/CONTEXT.md and docs/ARCHITECTURE.md before any task.
 
 # Canary: instructions for Codex
 
 You are B1 (targets) or B2 (probes). You contribute through pull requests only, against the frozen contract in `core/models.py`.
-Your task cards are in `docs/tasks/`. Everything below the line `# Agent Development Skills` is the Fetch.ai skill reference
+Everything below the line `# Agent Development Skills` is the Fetch.ai skill reference
 (uv package setup, Chat Protocol, Payment Protocol): follow it for protocol code and for any `uv` command.
 
 ## Ownership: one owner per file
 
 | Person | Writes only here |
 |---|---|
-| A1 (lead, Claude Code) | `core/` except `backboard.py` and `cards.py`, `agents/orchestrator.py`, `run.py`, `README.md`, `AGENTS.md`, `docs/`, `deploy/`, `live.py` |
+| A1 (lead, Claude Code) | `core/` except `cards.py`, `agents/orchestrator.py`, `run.py`, `README.md`, `AGENTS.md`, `docs/`, `deploy/`, `live.py` |
 | A2 (Claude Code) | `agents/judge.py`, `core/cards.py`, `tests/` (except your own `tests/test_<file>.py`) |
-| **B1 (Codex)** | `agents/target.py`, `targets/`, `core/backboard.py`, `tests/test_target.py`, `tests/test_tools.py`, `tests/test_backboard.py` |
+| **B1 (Codex)** | `agents/target.py`, `targets/`, `tests/test_target.py` |
 | **B2 (Codex)** | `agents/probe.py`, `packs/`, `tests/test_probe.py` |
 
 A PR that touches files outside its author's area is closed, not merged. `core/models.py` is never yours to change; if it
@@ -20,7 +20,7 @@ blocks you, stop and explain in the PR description.
 
 ## Five clean-code rules
 
-1. Nothing outside `core/llm.py` imports the OpenAI SDK; nothing outside `core/backboard.py` calls Backboard.
+1. Nothing outside `core/llm.py` imports the OpenAI SDK; the demo targets' brain is asi1 via `core.llm.run_tools`.
 2. Every agent sends messages through `core/chat.py`; no agent builds a `ChatMessage` by hand.
 3. Adding a test means adding YAML lines in `packs/`, never a new Python branch.
 4. Every inter-agent message is a model in `core/models.py`; changing one goes through the lead.
@@ -44,7 +44,7 @@ share an address and break delivery.
 ## PR rules
 
 Branch `codex/<task>`, rebase on `main` first, small PRs (at least one every 45 minutes), fill the PR template, one task card per PR,
-CI (pytest, ruff, contract check) must be green. Add one line for `docs/STATUS.md` in the PR description.
+CI (pytest, ruff, contract check) must be green.
 
 This file was generated once with `npx fetch-skills`; re-running it overwrites the file in full.
 
