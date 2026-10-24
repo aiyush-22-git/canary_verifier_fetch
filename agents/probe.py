@@ -63,6 +63,7 @@ PAY_ACTIONS = ("pay_fake", "pay_replay", "pay_wrong_amount")
 SUPPORTED = (*CHAT_ACTIONS, *PAY_ACTIONS, "service_before_pay")
 TERMINAL = ("complete", "cancel", "reject")
 MAX_ACKS = 500
+ACK_GRACE_S = 6.0  # hosted delivery is unordered: an ACK may land after the reply, so a finished run waits this long for it
 
 Out = dict[str, Any]  # {"type": "chat", "msg": ChatMessage} or {"type": "commit", ...}
 
@@ -75,7 +76,7 @@ def start(req: ProbeRequest, now: float) -> dict[str, Any]:
         "audit_id": req.audit_id, "kind": req.kind, "target_address": req.target_address, "target_name": req.target_name,
         "judge_address": req.judge_address, "timeout_s": req.timeout_s,
         "cases": [c.dict() for c in req.cases], "idx": 0, "exchanges": [], "cur": None, "acked": [],
-        "finished": False, "started": now,
+        "late_acks": {}, "finished": False, "finished_at": 0.0, "started": now,
     }
 
 
@@ -134,8 +135,18 @@ def begin(run: dict[str, Any], now: float) -> list[Out]:
             return _finish_case(run, now)
         run["exchanges"].append(Exchange(case=AttackCase(**case), error="unsupported action").dict())
         run["idx"] += 1
-    run["cur"], run["finished"] = None, True
+    run["cur"], run["finished"], run["finished_at"] = None, True, now
     return []
+
+
+def apply_late_acks(run: dict[str, Any]) -> int:
+    """Mark closed exchanges acknowledged once all their ACKs have arrived. Returns how many still wait for one."""
+    for key, ids in list(run["late_acks"].items()):
+        if all(i in run["acked"] for i in ids):
+            ex = run["exchanges"][int(key)]
+            ex["acked"], ex["events"] = True, [EVENT_ACK, *ex["events"]]
+            del run["late_acks"][key]
+    return len(run["late_acks"])
 
 
 def _finish_case(run: dict[str, Any], now: float) -> list[Out]:
@@ -149,6 +160,8 @@ def _finish_case(run: dict[str, Any], now: float) -> list[Out]:
         sent_chat=sent_chat, acked=acked, latency_ms=int((cur["last_at"] - cur["started"]) * 1000) if cur["activity"] else 0,
         timed_out=silent,
     ).dict())
+    if sent_chat and not acked:
+        run["late_acks"][str(len(run["exchanges"]) - 1)] = cur["sent_ids"]
     run["idx"] += 1
     run["cur"] = None
     return begin(run, now)
@@ -300,6 +313,9 @@ async def _flush(ctx: Context, address: str, run: dict[str, Any], outs: list[Out
         return
     if run.get("_stored") and _load(ctx, address) is None:  # the tick and a message handler can both reach this point: only the first reports
         return
+    if apply_late_acks(run) and time.time() < run["finished_at"] + ACK_GRACE_S:
+        _save(ctx, address, run)  # the tick flushes again until the ACKs arrive or the grace period ends
+        return
     _clear(ctx, address)
     ctx.logger.info(f"[outbound] ProbeResult -> {run['judge_address']} audit={run['audit_id']} exchanges={len(run['exchanges'])}")
     await ctx.send(run["judge_address"], result_of(run))
@@ -371,7 +387,10 @@ async def on_ack(ctx: Context, sender: str, ack: ChatAcknowledgement) -> None:
     run = _load(ctx, sender)
     if run is not None:
         run["acked"] = [*run["acked"], str(ack.acknowledged_msg_id)][-MAX_ACKS:]
-        _save(ctx, sender, run)
+        if run["finished"]:
+            await _flush(ctx, sender, run, [])  # the last missing ACK releases the result early
+        else:
+            _save(ctx, sender, run)
 
 
 async def on_request_payment(ctx: Context, sender: str, msg: RequestPayment) -> None:

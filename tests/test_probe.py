@@ -301,3 +301,21 @@ async def test_unknown_action_is_an_error_exchange_not_a_crash(world):
     odd = AttackCase(id="odd-action", category="leak", title="odd", action="telepathy", rule_kind="soft", rubric="x")
     res = await sink.result(sink.ask("leak", shops["target-solid"], [odd], "odd"))
     assert res.exchanges[0].error == "unsupported action"
+
+
+def test_an_ack_that_arrives_after_the_reply_still_counts():
+    """Hosted delivery is unordered: the reply can close the case before its ACK lands. The ACK must still count."""
+    from agents import probe
+
+    case = AttackCase(id="late-ack", category="leak", title="t", action="chat", messages=["hi"], rule_kind="soft", rubric="r")
+    req = ProbeRequest(audit_id="a", kind="leak", target_address="agent1qtarget", target_name="T", judge_address="agent1qjudge",
+                       cases=[case])
+    run = probe.start(req, 0.0)
+    sent = probe.begin(run, 0.0)[0]["msg"]
+    probe.on_item(run, "text", {"body": "hello"}, 1.0)
+    probe.advance(run, 2.0)  # the reply closes the only case: the run is finished, its ACK is still missing
+    assert run["finished"] and not run["exchanges"][0]["acked"] and probe.apply_late_acks(run) == 1
+    run["acked"].append(str(sent.msg_id))
+    assert probe.apply_late_acks(run) == 0
+    ex = Exchange.parse_obj(run["exchanges"][0])
+    assert ex.acked and ex.events[0] == probe.EVENT_ACK
