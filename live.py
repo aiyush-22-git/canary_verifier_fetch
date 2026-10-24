@@ -28,17 +28,26 @@ PROFILE_URL = "https://agentverse.ai/agents/details/{address}/profile"
 OK, WARN, FAIL = "ok  ", "warn", "FAIL"
 
 
+def env_path() -> Path:
+    """The repo-root .env. Inside a worktree that is the main checkout (the first ancestor whose `.git` is a
+    directory), so there is one .env no matter where you run from; config.py finds it by searching upward."""
+    for folder in (ROOT, *ROOT.parents):
+        if (folder / ".git").is_dir():
+            return folder / ".env"
+    return ROOT / ".env"
+
+
 def init_env() -> int:
-    target, example = ROOT / ".env", ROOT / ".env.example"
+    target, example = env_path(), ROOT / ".env.example"
     if target.exists():
-        print(".env already exists: leaving it alone (delete it first if you really want fresh seeds).")
+        print(f"{target} already exists: leaving it alone (delete it first if you really want fresh seeds).")
         return 1
     text = example.read_text()
     text = re.sub(r"^LOCAL_ONLY=.*$", "LOCAL_ONLY=0", text, flags=re.M)
     text = re.sub(r"^(SEED_[A-Z_]+)=$", lambda m: f"{m.group(1)}=canary-{secrets.token_hex(16)}", text, flags=re.M)
     target.write_text(text)
     target.chmod(stat.S_IRUSR | stat.S_IWUSR)
-    print("Wrote .env with fresh seeds for all 8 agents (git-ignored, mode 600).")
+    print(f"Wrote {target} with fresh seeds for all 8 agents (git-ignored, mode 600).")
     print("Now add ASI1_API_KEY and AGENTVERSE_API_KEY (and BACKBOARD_API_KEY once targets land), then: uv run python live.py check")
     print("Back the seeds up: losing one means losing that agent's Agentverse address.")
     return 0
