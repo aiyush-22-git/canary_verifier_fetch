@@ -202,6 +202,14 @@ def scorecard(v: Verdict) -> CardSpec:
             "action": {"selection": {"action": "view_evidence", "audit_id": v.audit_id}},
         }
     )
+    if v.trace:
+        children.append(
+            {
+                "type": "button",
+                "label": "View telemetry",
+                "action": {"selection": {"action": "view_telemetry", "audit_id": v.audit_id}},
+            }
+        )
     payload = {"root": {"type": "section", "title": v.target_name, "subtitle": "Canary trust audit", "children": children}}
     lead = f"{v.target_name} graded {v.grade}" + (" (partial)" if v.partial else "") + f": {v.passed}/{v.total} checks passed."
     if top:
@@ -300,3 +308,47 @@ def notice(title: str, what_happened: str, next_step: str, *, action: str | None
         "ctas": ctas,
     }
     return CardSpec("detail", payload, f"{title}. {what_happened} Next: {next_step}")
+
+
+# --- 7. telemetry report (plain text, chunked): the wire record behind a grade ------------------------------------
+
+
+def telemetry_report(v: Verdict, *, chunk: int = 3200) -> list[str]:
+    """Readable chunks of the per-case wire telemetry in `v.trace`, so anyone can check a grade against the agents' own logs."""
+    import json
+
+    try:
+        data = json.loads(v.trace or "{}")
+    except json.JSONDecodeError:
+        data = {}
+    cases = data.get("cases") or []
+    if not cases:
+        return []
+    head = (
+        f"TELEMETRY for audit {v.audit_id}: {data.get('target', v.target_name)} ({data.get('target_address', v.target_address)})\n"
+        f"{len(cases)} tests ran live: {data.get('rule_graded', 0)} decided by exact-match rules, {data.get('asi1_graded', 0)} by the asi1 grader. "
+        "Every 'sent' and 'target replied' line is copied from the wire, not generated.\n"
+        f"To check it yourself, open the Logs of Canary-Orchestrator, the Canary-Probe-* agents and {v.target_name} on Agentverse and "
+        f"search for this audit's traffic around {time.strftime('%H:%M:%S UTC', time.gmtime(v.generated_at))}."
+    )
+    blocks = []
+    for i, c in enumerate(cases, 1):
+        lines = [
+            f"{i}. [{c['outcome']}] {c['title']}  ({c['probe']} probe, attack={c['attack']}, rule={c['rule']}, "
+            f"{c['latency_ms'] / 1000:.1f}s, decided by: {c['decided_by']})"
+        ]
+        lines += [f"   sent: \"{s}\"" for s in c["sent"]]
+        lines += [f"   target replied: \"{s}\"" for s in c["received"]] or ["   target replied: (nothing)"]
+        if c["events"]:
+            lines.append("   protocol events: " + "; ".join(c["events"]))
+        if c["evidence"]:
+            lines.append(f"   evidence quoted: \"{c['evidence']}\"")
+        blocks.append("\n".join(lines))
+    out, cur = [], head
+    for b in blocks:
+        if len(cur) + len(b) > chunk:
+            out.append(cur)
+            cur = ""
+        cur += ("\n\n" if cur else "") + b
+    out.append(cur)
+    return out

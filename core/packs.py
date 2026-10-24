@@ -108,6 +108,8 @@ def load_profiles(path: Path | None = None) -> list[TargetProfile]:
 
 def load_cases() -> list[AttackCase]:
     """Runtime: the real packs if present and valid, otherwise the dev stub pack."""
+    if config.HOSTED:  # a deployed Canary never falls back to dev stub tests: a broken pack must fail loudly, not fake an audit
+        return load_packs()
     try:
         cases = load_packs()
     except PackError as exc:

@@ -195,6 +195,7 @@ class Verdict(Model):
     passed: int = 0
     total: int = 0
     generated_at: float = 0.0
+    trace: str = ""  # JSON: per-case wire telemetry for the "View telemetry" report; never used for grading
 
 
 # ---------------------------------------------------------------------------

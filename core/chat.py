@@ -126,6 +126,7 @@ def extract_cards(msg: ChatMessage) -> list[dict[str, Any]]:
 _ACTION_WORDS: dict[str, tuple[str, ...]] = {
     "pay_and_run": ("pay_and_run", "pay and run"),
     "view_evidence": ("view_evidence", "view evidence"),
+    "view_telemetry": ("view_telemetry", "view telemetry", "show telemetry", "telemetry"),
     "retest": ("retest", "re-test"),
     "run_fresh": ("run_fresh", "run a fresh audit", "fresh audit"),
     "open_finding": ("open_finding",),

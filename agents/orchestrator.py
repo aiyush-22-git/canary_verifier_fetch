@@ -30,7 +30,7 @@ from core.registry import Registry, get_registry
 HELP = (
     "I'm Canary, a trust auditor for Agentverse agents. Before you pay an agent, ask me:\n"
     "- \"Is ShopBot-Solid safe to pay?\": instant, free if I've already tested it\n"
-    "- \"Audit ShopBot-Overcharge\": a live paid audit with real attacks, graded A to F with quotes\n"
+    f"- \"Audit ShopBot-Overcharge\": a live {'free' if payments.is_free() else 'paid'} audit with real attacks, graded A to F with quotes\n"
     "- \"I own agent1q...\": verify your agent so it's re-tested on a timer\n"
     "Demo agents available: ShopBot-Leaky, ShopBot-Overcharge, ShopBot-Solid."
 )
@@ -131,7 +131,8 @@ def build_orchestrator(registry: Registry | None = None, agent=None):
             await notice(
                 ctx, job.requester, "The audit didn't finish",
                 f"{job.plan.target_name} or one of my probes stopped responding before a verdict was ready.",
-                "You've already paid for this audit, so you can re-run it without paying again.",
+                "Audits are free here, so just re-run it." if payments.is_free()
+                else "You've already paid for this audit, so you can re-run it without paying again.",
                 action="retry_audit", cta_label="Re-run my audit", audit_id=audit_id,
             )
 
@@ -256,6 +257,15 @@ def build_orchestrator(registry: Registry | None = None, agent=None):
                 await chat.send_text(ctx, sender, "That audit has no findings to show.")
             else:
                 await chat.send_card(ctx, sender, *cards.evidence_overview(v))
+            return True
+
+        if action == "view_telemetry":
+            v = reg.get_verdict(audit_id)
+            chunks = cards.telemetry_report(v) if v else []
+            if not chunks:
+                await chat.send_text(ctx, sender, "I have no wire telemetry stored for that audit.")
+            for part in chunks:
+                await chat.send_text(ctx, sender, part)
             return True
 
         if action == "open_finding":
@@ -405,7 +415,8 @@ def build_orchestrator(registry: Registry | None = None, agent=None):
                 await notice(
                     ctx, job.requester, "I couldn't test that agent",
                     f"{v.target_name} didn't answer my probes in time, so there is nothing to grade.",
-                    "You've already paid, so you can re-run this audit without paying again once the agent is online.",
+                    "Audits are free here, so re-run it once the agent is online." if payments.is_free()
+                    else "You've already paid, so you can re-run this audit without paying again once the agent is online.",
                     action="retry_audit", cta_label="Re-run my audit", audit_id=v.audit_id,
                 )
             return

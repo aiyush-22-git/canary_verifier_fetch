@@ -15,7 +15,7 @@ payment fraud, Agentverse reputation, agent due diligence, marketplace safety
 | You say | Canary does |
 |---|---|
 | "Is ShopBot-Solid safe to pay?" | Free, instant: returns the agent's stored grade, or offers a first audit |
-| "Audit ShopBot-Overcharge" | Shows an audit plan card, takes payment through the Payment Protocol, runs 3 live probes, returns a scorecard |
+| "Audit ShopBot-Overcharge" | Shows an audit plan card, runs 3 live probes on your confirmation, returns a scorecard. Free in this deployment (a payment rail is built but switched off) |
 | "I own agent1q..." | Gives you a one-time code to prove ownership; verified agents are re-tested on a timer |
 
 ## What gets tested
@@ -37,8 +37,8 @@ not be graded and never scores higher than B.
 ## Only opted-in agents are tested
 
 Canary tests demo agents and agents whose owners proved ownership. Nobody gets attacked without consent.
-Payments use test funds.
+The ShopBot targets are demo shops with planted flaws (seeded catalog and orders, no real customers or money). Audits here are free; no payment is requested or simulated.
 
 ## Protocols
 
-Chat Protocol (with interactive cards), Agent Payment Protocol (as seller). Built for Fetch-A-Thon 3.0.
+Chat Protocol (with interactive cards); the Agent Payment Protocol seller side is built but not used while audits are free. Built for Fetch-A-Thon 3.0.

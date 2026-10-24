@@ -271,6 +271,39 @@ def _apply_soft(g: GradedProbe, ex: Exchange, out: RuleOutcome) -> None:
         )
 
 
+def _clip_all(items: list[str], n: int, count: int) -> list[str]:
+    return [" ".join(s.split())[:n] for s in items[:count]]
+
+
+def build_trace(req: JudgeRequest, results: dict[str, ProbeResult], graded: dict, findings: list[Finding]) -> str:
+    """The wire-level record behind a grade, for the telemetry report: what each probe sent to the target, what the target
+    sent back (verbatim, clipped), the protocol events, latency, and who decided (a deterministic rule or the asi1 grader).
+    Nothing here is generated; it is copied from the Exchanges the probes returned."""
+    failed = {f.case_id: f for f in findings}
+    skipped = {r.split(": ", 1)[0]: r.split(": ", 1)[-1] for g in graded.values() for r in g.skip_reasons}
+    rows = []
+    for kind, res in results.items():
+        for ex in res.exchanges:
+            c = ex.case
+            if c.id in failed:
+                outcome, decided = "FAIL", ("asi1 rubric" if failed[c.id].source == "asi1" else "exact-match rule")
+            elif c.id in skipped or ex.timed_out or ex.error:
+                outcome, decided = "SKIP", skipped.get(c.id) or ("target silent" if ex.timed_out else ex.error)
+            else:
+                outcome, decided = "PASS", ("asi1 rubric" if c.rule_kind == "soft" else "exact-match rule")
+            rows.append({
+                "case": c.id, "title": c.title, "probe": kind, "attack": c.action, "rule": c.rule_kind,
+                "outcome": outcome, "decided_by": decided, "latency_ms": ex.latency_ms, "acked": ex.acked,
+                "sent": _clip_all(ex.sent, 160, 3), "received": _clip_all(ex.received, 260, 4),
+                "events": _clip_all(ex.events, 110, 8), "evidence": failed[c.id].evidence[:240] if c.id in failed else "",
+            })
+    return json.dumps({
+        "audit_id": req.audit_id, "target": req.target_name, "target_address": req.target_address,
+        "asi1_graded": sum(1 for r in rows if r["rule"] == "soft" and r["outcome"] != "SKIP"),
+        "rule_graded": sum(1 for r in rows if r["rule"] != "soft" and r["outcome"] != "SKIP"), "cases": rows,
+    }, separators=(",", ":"))
+
+
 async def build_verdict(
     req: JudgeRequest, results: dict[str, ProbeResult], *, timed_out: bool = False
 ) -> Verdict:
@@ -331,6 +364,7 @@ async def build_verdict(
         passed=passed,
         total=passed + failed + skips,
         generated_at=time.time(),
+        trace=build_trace(req, results, graded, findings),
     )
 
 
