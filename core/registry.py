@@ -10,6 +10,7 @@ import secrets
 import sqlite3
 import threading
 import time
+from typing import NamedTuple
 
 from core import config
 from core.models import Finding, RegistryEntry, Verdict
@@ -92,6 +93,20 @@ CREATE TABLE IF NOT EXISTS judge_early (
 
 
 STORE_KEY = "canary_db"
+
+
+class StoredVerdict(NamedTuple):
+    """A stored verdict and when it was stored: what a trust lookup needs to say how old a grade is."""
+
+    verdict: Verdict
+    audited_at: float
+    verified: bool = False
+    last_verified: float = 0.0
+
+
+def finished(v: Verdict) -> bool:
+    """True if the audit graded something. A verdict that graded nothing (target silent, probes down) is not a grade."""
+    return (v.passed > 0 or bool(v.findings)) and "nothing could be graded" not in v.partial_reason
 
 
 class Registry:
@@ -308,6 +323,20 @@ class Registry:
             verified=bool(row["verified"] or 0),
             last_verified=float(row["last_verified"] or 0),
         )
+
+    def latest_verdict(self, address: str) -> StoredVerdict | None:
+        """The newest finished audit for an address, with when it was stored. Rows that graded nothing (saved before
+        the Orchestrator refused to cache them) are skipped: an audit that didn't finish never shows a grade."""
+        rows = self._all(
+            "SELECT a.verdict_json, a.created_at, g.verified, g.last_verified FROM audits a "
+            "LEFT JOIN agents g ON g.address=a.address WHERE a.address=? ORDER BY a.created_at DESC",
+            (address,),
+        )
+        for row in rows:
+            v = Verdict.parse_raw(row["verdict_json"])
+            if finished(v):
+                return StoredVerdict(v, float(row["created_at"]), bool(row["verified"] or 0), float(row["last_verified"] or 0))
+        return None
 
     def findings_for(self, audit_id: str) -> list[Finding]:
         return [Finding.parse_raw(r["finding_json"]) for r in self._all(

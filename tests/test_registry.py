@@ -56,3 +56,16 @@ def test_owner_code_needs_the_right_user_and_the_code_in_the_profile():
     assert reg.confirm_owner_code("agent1qowned", "alice", f"My agent. {code}")
     assert reg.is_allowed("agent1qowned") and len(reg.verified_agents()) == 1
     assert not reg.confirm_owner_code("agent1qowned", "alice", f"{code}")  # one-time
+
+
+def test_latest_verdict_skips_audits_that_graded_nothing():
+    reg = Registry(":memory:")
+    assert reg.latest_verdict("agent1qt") is None
+    reg.save_verdict(verdict("aud-done"), "alice")
+    reg._run("UPDATE audits SET created_at=created_at-100 WHERE audit_id='aud-done'")
+    empty = Verdict(audit_id="aud-empty", target_name="ShopBot", target_address="agent1qt", grade="F", score=0,
+                    partial=True, partial_reason="nothing could be graded; no result from leak probe")
+    reg.save_verdict(empty, "alice")  # e.g. stored by an older build before the Orchestrator refused to cache these
+    stored = reg.latest_verdict("agent1qt")
+    assert stored is not None and stored.verdict.audit_id == "aud-done"
+    assert abs(time.time() - 100 - stored.audited_at) < 5 and not stored.verified

@@ -28,14 +28,20 @@ from core.models import AuditPlan, JudgeRequest, ProbeProgress, ProbeRequest, Ve
 from core.packs import load_cases
 from core.registry import Registry, get_registry
 
-HELP = (
-    "I'm Canary, a security auditor for Agentverse agents. I only test agents whose owners opted in, I never ask for "
-    "passwords, keys or payment details, and I only reply when you message me. You can ask:\n"
-    "- \"Is ShopBot-Solid safe to pay?\": instant, free if I've already tested it\n"
-    f"- \"Audit ShopBot-Overcharge\": a live {'free' if payments.is_free() else 'paid'} audit with real attacks, graded A to F with quotes\n"
-    "- \"I own agent1q...\": verify your agent so it's re-tested on a timer\n"
-    "Demo agents available: ShopBot-Leaky, ShopBot-Overcharge, ShopBot-Solid."
-)
+
+def help_text() -> str:
+    """Only what this deployment really does: the price line follows the configured rail, the agents the allowlist."""
+    price = "free in this deployment" if payments.is_free() else f"{config.AUDIT_PRICE_USD} USD, paid via {payments.rail_label()} checkout"
+    return (
+        "I'm Canary, a security auditor for Agentverse agents. I only test agents whose owners opted in, I never ask for "
+        "passwords or keys, and I only reply when you message me. You can ask:\n"
+        "- \"Is ShopBot-Solid safe to pay?\": a free lookup. I show a stored grade as current only if its audit finished "
+        f"in the last {cards.span(config.VERDICT_FRESH_S)}; otherwise I say it's out of date and offer a fresh audit\n"
+        f"- \"Audit ShopBot-Overcharge\": a live audit ({price}) where my probe agents attack it over the Chat and Payment "
+        "Protocols; graded A to F with a verbatim quote for every finding\n"
+        "- \"I own agent1q...\": verify your agent so it's re-tested on a timer\n"
+        f"Demo agents available: {', '.join(t.name for t in config.DEMO_TARGETS.values())}."
+    )
 
 
 @dataclass
@@ -90,14 +96,23 @@ def build_orchestrator(registry: Registry | None = None, agent=None):
         await chat.send_card(ctx, to, *cards.audit_plan(plan, rail_label=payments.rail_label()))
 
     async def lookup(ctx: Context, to: str, address: str) -> None:
-        entry = reg.latest(address)
-        if entry is None:
+        """A fresh verdict is the answer; an older one is history and the fresh audit plan is the next step."""
+        stored, now = reg.latest_verdict(address), time.time()
+        if stored is None:
             row = reg.find_agent(address)
             if row and row["allowed"]:
                 await chat.send_text(ctx, to, f"I haven't tested {row['name']} yet. Here is the plan for a first audit.")
             await offer_plan(ctx, to, address)
             return
-        await chat.send_card(ctx, to, *cards.trust_lookup(entry))
+        if cards.is_fresh(stored.audited_at, config.VERDICT_FRESH_S, now):
+            await chat.send_card(ctx, to, *cards.trust_lookup(
+                stored.verdict, stored.audited_at, fresh_s=config.VERDICT_FRESH_S, now=now,
+                verified=stored.verified, last_verified=stored.last_verified,
+            ))
+            return
+        await chat.send_text(ctx, to, cards.historical_lookup(stored.verdict, stored.audited_at,
+                                                              fresh_s=config.VERDICT_FRESH_S, now=now))
+        await offer_plan(ctx, to, address)
 
     async def start_run(ctx: Context, requester: str, plan: AuditPlan, paid_tx: str, *, system: bool = False) -> None:
         """Fan out: JudgeRequest first (so it knows what to expect), then one ProbeRequest per family."""
@@ -345,10 +360,10 @@ def build_orchestrator(registry: Registry | None = None, agent=None):
             else:
                 await lookup(ctx, sender, addr)
             return
-        await chat.send_text(ctx, sender, HELP)
+        await chat.send_text(ctx, sender, help_text())
 
     async def on_start(ctx: Context, sender: str) -> None:
-        await chat.send_text(ctx, sender, HELP)
+        await chat.send_text(ctx, sender, help_text())
 
     agent.include(chat.make_chat_protocol(on_text, on_start=on_start), publish_manifest=True)
 

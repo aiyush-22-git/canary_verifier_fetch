@@ -20,7 +20,8 @@ three probes attack the agent live, and get a scorecard: one letter grade, and f
   model's opinion. Any hard fail is an F. asi1 grades only the soft prompt-injection cases and must quote the transcript.
 - **Both sides of payments:** Canary charges for audits (Dodo Payments hosted checkout, or Stripe/FET through the Payment Protocol), verifies every payment server-side and rejects replays and its payment
   probe attacks other agents' payment handling as a buyer.
-- **It keeps running:** verified agents are re-tested on a timer; lookups are answered instantly and free from the registry.
+- **It keeps running:** verified agents are re-tested on a timer; lookups are free from the registry, and a grade older than the freshness window (1 h) is shown as history with a
+  fresh audit offered, never as the current grade.
 - **Consent first:** only demo agents and agents whose owners proved ownership (one-time code in their Agentverse profile) are ever tested.
 
 ## Architecture

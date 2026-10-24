@@ -1,8 +1,8 @@
 """Loads attack packs and target profiles from YAML and validates them against core/models.py.
 
 `load_packs()` raises on the first invalid row: contract_check uses that. `load_cases()` is the
-runtime entry point and falls back to the dev stub pack when packs/ is empty, so the flow still
-runs before the Codex packs land.
+runtime entry point; only a LOCAL_ONLY dev Bureau falls back to the dev stub pack when packs/ is
+empty or invalid. Hosted and mailbox agents never run stub tests.
 """
 
 from __future__ import annotations
@@ -108,7 +108,9 @@ def load_profiles(path: Path | None = None) -> list[TargetProfile]:
 
 def load_cases() -> list[AttackCase]:
     """Runtime: the real packs if present and valid, otherwise the dev stub pack."""
-    if config.HOSTED:  # a deployed Canary never falls back to dev stub tests: a broken pack must fail loudly, not fake an audit
+    # Only a LOCAL_ONLY dev Bureau (unreachable from ASI:One) may fall back to the stub pack. A hosted bundle, or a
+    # mailbox Bureau a real user can reach, fails loudly on a broken pack instead of grading anyone on stub tests.
+    if config.HOSTED or bundle_data is not None or not config.LOCAL_ONLY:
         return load_packs()
     try:
         cases = load_packs()

@@ -131,7 +131,7 @@ async def test_second_lookup_is_free_and_instant(world):
     requests = len(client.payment_requests)
     t0 = time.monotonic()
     msg = await client.reply_to(lambda: client.say("Is ShopBot-Leaky safe to pay?"))
-    assert any(c["kind"] == "detail" for c in msg.cards) and "scored F" in msg.text
+    assert any(c["kind"] == "detail" for c in msg.cards) and "graded F" in msg.text
     assert time.monotonic() - t0 < 5 and len(client.payment_requests) == requests
 
 
