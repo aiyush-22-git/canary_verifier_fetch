@@ -5,6 +5,7 @@
     uv run python live.py register        # register all 8 agents (profile, readme, protocols) with your Agentverse API key
     uv run python live.py register --dry-run
     uv run python live.py addresses       # name, address and Agentverse profile URL for the README
+    uv run python live.py status          # health: are all 8 agents registered and active on Agentverse?
 
 Then `uv run python run.py` (real seeds, Orchestrator on the mailbox) and `uv run pytest -m live`.
 Full runbook: docs/LIVE.md.
@@ -191,6 +192,38 @@ def register(dry_run: bool = False) -> int:
     return 1 if failures else 0
 
 
+def agent_status(address: str) -> tuple[bool, str]:
+    """Is this agent known to Agentverse (and not marked inactive)? Tolerant of fields the API may not return."""
+    try:
+        r = httpx.get(f"https://agentverse.ai/v1/almanac/agents/{address}", timeout=8)
+    except Exception as exc:
+        return False, f"unreachable ({type(exc).__name__})"
+    if r.status_code == 404:
+        return False, "not registered (run: live.py register)"
+    if r.status_code != 200:
+        return False, f"HTTP {r.status_code}"
+    try:
+        data = r.json()
+    except ValueError:
+        return True, "registered"
+    active = data.get("is_active", data.get("active")) if isinstance(data, dict) else None
+    if active is False:
+        return False, "registered but inactive (is the Bureau running?)"
+    return True, "active" if active else "registered"
+
+
+def status() -> int:
+    """Post-deploy health check: all 8 agents registered and active on Agentverse. Exit 1 if any is not."""
+    bad = 0
+    for spec in config.AGENTS.values():
+        address = config.agent_address(spec.key)
+        ok, detail = agent_status(address)
+        bad += not ok
+        _row(OK if ok else FAIL, f"{spec.name:<26}", f"{detail}  {PROFILE_URL.format(address=address)}")
+    print(f"\n{len(config.AGENTS) - bad}/{len(config.AGENTS)} agents healthy")
+    return 1 if bad else 0
+
+
 def addresses() -> int:
     for spec in config.AGENTS.values():
         address = config.agent_address(spec.key)
@@ -206,6 +239,8 @@ def main() -> int:
         return check()
     if cmd == "register":
         return register(dry_run="--dry-run" in sys.argv)
+    if cmd == "status":
+        return status()
     if cmd == "addresses":
         return addresses()
     print(__doc__)

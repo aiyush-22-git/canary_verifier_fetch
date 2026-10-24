@@ -10,7 +10,7 @@ Your task cards are in `docs/tasks/`. Everything below the line `# Agent Develop
 
 | Person | Writes only here |
 |---|---|
-| A1 (lead, Claude Code) | `core/` except `backboard.py` and `cards.py`, `agents/orchestrator.py`, `run.py`, `README.md`, `AGENTS.md`, `docs/` |
+| A1 (lead, Claude Code) | `core/` except `backboard.py` and `cards.py`, `agents/orchestrator.py`, `run.py`, `README.md`, `AGENTS.md`, `docs/`, `deploy/`, `live.py` |
 | A2 (Claude Code) | `agents/judge.py`, `core/cards.py`, `tests/` (except your own `tests/test_<file>.py`) |
 | **B1 (Codex)** | `agents/target.py`, `targets/`, `core/backboard.py`, `tests/test_target.py`, `tests/test_tools.py`, `tests/test_backboard.py` |
 | **B2 (Codex)** | `agents/probe.py`, `packs/`, `tests/test_probe.py` |

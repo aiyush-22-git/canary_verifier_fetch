@@ -1,0 +1,25 @@
+[Unit]
+Description=Canary trust auditor (one Bureau, eight agents)
+After=network-online.target
+Wants=network-online.target
+# Never run two copies: the same seeds on two machines share one Agentverse address.
+
+[Service]
+User=canary
+Group=canary
+WorkingDirectory=/opt/canary
+# .env (keys and seeds) is read from /opt/canary/.env by core/config.py; only the DB path is set here.
+Environment=CANARY_DB=/var/lib/canary/canary.db
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/canary/.venv/bin/python run.py
+Restart=always
+RestartSec=5
+# A clean stop gives the Bureau time to mark the agents inactive on Agentverse.
+TimeoutStopSec=70
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/canary /opt/canary
+
+[Install]
+WantedBy=multi-user.target

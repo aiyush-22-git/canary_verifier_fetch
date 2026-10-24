@@ -32,6 +32,9 @@ Entry points `run.py` expects: `agents.probe.build_probe(kind)` and `agents.targ
 - An all-skipped audit (target silent) is reported with a "couldn't test" notice and is not cached.
 - Architecture image for the README is not made yet (ASCII diagram only).
 
+## Deployment
+Plan: one AWS Lightsail VM (us-east-1, Ubuntu 24.04, `small_3_0`), systemd service, SSH-only firewall. Scripts and runbook are ready (`deploy/`, `docs/DEPLOY.md`); **not deployed yet**. Waiting on: `AGENTVERSE_API_KEY` and `DODO_PRODUCT_ID` in `.env`, the Codex PRs merged into `main` (so the demo isn't on dev stubs), and `live.py register`.
+
 ## Human-only steps (need accounts, keys, or a browser)
 Full runbook: `docs/LIVE.md`. Helper: `uv run python live.py init-env | check | register | addresses`; real-asi1 tests: `uv run pytest -m live`.
 0. CI: the push token had no `workflow` scope, so the workflow lives at `docs/ci.yml.template`. Copy it to `.github/workflows/ci.yml` with a token that has the scope (or via the GitHub web UI), then protect `main` with that check.

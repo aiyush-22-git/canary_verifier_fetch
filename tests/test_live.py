@@ -122,6 +122,49 @@ def test_register_dry_run_covers_all_eight_agents(capsys):
     assert out.count("[dry-run]") == len(config.AGENTS) == 8
 
 
+class _Resp:
+    def __init__(self, code: int, body=None):
+        self.status_code, self._body = code, body
+
+    def json(self):
+        if self._body is None:
+            raise ValueError("no body")
+        return self._body
+
+
+@pytest.mark.parametrize(
+    ("resp", "ok", "needle"),
+    [
+        (_Resp(200, {"is_active": True}), True, "active"),
+        (_Resp(200, {"address": "x"}), True, "registered"),
+        (_Resp(200), True, "registered"),
+        (_Resp(200, {"is_active": False}), False, "inactive"),
+        (_Resp(404), False, "not registered"),
+        (_Resp(503), False, "HTTP 503"),
+    ],
+)
+def test_agent_status_reads_agentverse_responses(monkeypatch, resp, ok, needle):
+    monkeypatch.setattr(live.httpx, "get", lambda *a, **k: resp)
+    got_ok, detail = live.agent_status("agent1qx")
+    assert got_ok is ok and needle in detail
+
+
+def test_agent_status_survives_a_network_failure(monkeypatch):
+    def boom(*a, **k):
+        raise ConnectionError("offline")
+
+    monkeypatch.setattr(live.httpx, "get", boom)
+    ok, detail = live.agent_status("agent1qx")
+    assert not ok and "unreachable" in detail
+
+
+def test_status_exits_nonzero_unless_all_eight_are_healthy(monkeypatch, capsys):
+    monkeypatch.setattr(live.httpx, "get", lambda *a, **k: _Resp(200, {"is_active": True}))
+    assert live.status() == 0 and "8/8 agents healthy" in capsys.readouterr().out
+    monkeypatch.setattr(live.httpx, "get", lambda *a, **k: _Resp(404))
+    assert live.status() == 1 and "0/8 agents healthy" in capsys.readouterr().out
+
+
 def test_demo_targets_stay_allowlisted_in_a_fresh_registry():
     reg = Registry(":memory:")
     reg.seed_allowlist()

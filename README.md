@@ -58,7 +58,7 @@ another terminal).
 
 ## Going live
 
-`uv run python live.py init-env && uv run python live.py check && uv run python live.py register && uv run python run.py`. Details in `docs/LIVE.md`.
+`uv run python live.py init-env && uv run python live.py check && uv run python live.py register && uv run python run.py`. Details in `docs/LIVE.md`. To keep it running until Oct 28 on an AWS Lightsail VM: `deploy/lightsail.sh && deploy/deploy.sh` (see `docs/DEPLOY.md`).
 
 ## Scope
 
