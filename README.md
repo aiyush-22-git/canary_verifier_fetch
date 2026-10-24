@@ -32,14 +32,18 @@ Orchestrator --ProbeRequest--> Probe-Injection | Probe-Leak | Probe-Payment --Ch
 Probes --ProbeResult--> Judge --ProbeProgress, Verdict--> Orchestrator --scorecard card--> ASI:One
 ```
 
-All eight agents run in one uAgents Bureau, so internal hops are local; only the Orchestrator uses the mailbox. See `docs/CONTEXT.md`.
+All eight agents are deployed as hosted agents on Agentverse (they can also run in one local uAgents Bureau via `run.py`). See `docs/CONTEXT.md`.
 
 | Agent | Role | Address | Agentverse profile |
 |---|---|---|---|
-| Canary-Orchestrator | the only agent ASI:One talks to | _fill after registration_ | _link_ |
-| Canary-Judge | grades transcripts | _fill_ | _link_ |
-| Canary-Probe-Injection / -Leak / -Payment | attack packs | _fill_ | _link_ |
-| ShopBot-Leaky / -Overcharge / -Solid | demo targets (Backboard + 4 store tools) | _fill_ | _link_ |
+| Canary-Orchestrator | the only agent ASI:One talks to | `agent1qw4vnrljtcgkfnxwj3e4tlvhvxrp7jjxr4thulgkrs7kesmv6gd2way6kd6` | [profile](https://agentverse.ai/agents/details/agent1qw4vnrljtcgkfnxwj3e4tlvhvxrp7jjxr4thulgkrs7kesmv6gd2way6kd6/profile) |
+| Canary-Judge | grades transcripts (hard rules + asi1 soft grading) | `agent1qv7p4yrd4dzyr67wygheezg0el3mpm24asyw0u5xrqz39edrtlchqc33rys` | [profile](https://agentverse.ai/agents/details/agent1qv7p4yrd4dzyr67wygheezg0el3mpm24asyw0u5xrqz39edrtlchqc33rys/profile) |
+| Canary-Probe-Injection | prompt / tool-output injection pack | `agent1q0fwekwwlstkhtaz5330frx4shutj96dppmj8wkh4x6f4za0c938ugdrvwh` | [profile](https://agentverse.ai/agents/details/agent1q0fwekwwlstkhtaz5330frx4shutj96dppmj8wkh4x6f4za0c938ugdrvwh/profile) |
+| Canary-Probe-Leak | canary-token and data-leak pack | `agent1qdpvxn5ge2vm8ayexnjmnnwjs62nrudyrklkv86hxqwrrr66758fk0scj2n` | [profile](https://agentverse.ai/agents/details/agent1qdpvxn5ge2vm8ayexnjmnnwjs62nrudyrklkv86hxqwrrr66758fk0scj2n/profile) |
+| Canary-Probe-Payment | fake / replayed / short payment pack | `agent1q2yevx2vgmj7csvul5s7e7yucaf2l6gxzw9708vvc2ftjltye0llwrtgr4h` | [profile](https://agentverse.ai/agents/details/agent1q2yevx2vgmj7csvul5s7e7yucaf2l6gxzw9708vvc2ftjltye0llwrtgr4h/profile) |
+| ShopBot-Leaky | demo target (asi1 brain + 4 store tools) | `agent1qv79tyq956x0ukz0l826zukgcvmtv7ywd9qn90cygx2yauhwq4md2g795vs` | [profile](https://agentverse.ai/agents/details/agent1qv79tyq956x0ukz0l826zukgcvmtv7ywd9qn90cygx2yauhwq4md2g795vs/profile) |
+| ShopBot-Overcharge | demo target (asi1 brain + 4 store tools) | `agent1qtkvsq293xkt9eeq43u4zm4f4qte5wehq62jt7h897tlfflg3v9k56p9y5u` | [profile](https://agentverse.ai/agents/details/agent1qtkvsq293xkt9eeq43u4zm4f4qte5wehq62jt7h897tlfflg3v9k56p9y5u/profile) |
+| ShopBot-Solid | demo target (asi1 brain + 4 store tools) | `agent1qdxscp2c0fkqgu3yd2q04wz4j6t0lewhghx7gmp8jdx9sh0dgkt7j5wjuca` | [profile](https://agentverse.ai/agents/details/agent1qdxscp2c0fkqgu3yd2q04wz4j6t0lewhghx7gmp8jdx9sh0dgkt7j5wjuca/profile) |
 
 `LOCAL_ONLY=1 uv run python run.py --addresses` prints dev addresses; real ones come from your `SEED_*` values.
 
