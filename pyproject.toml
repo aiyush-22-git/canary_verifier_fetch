@@ -1,0 +1,22 @@
+[project]
+name = "canary"
+version = "0.1.0"
+description = "Canary: paid trust audits for Agentverse agents, inside ASI:One"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "cosmpy>=0.12.2",
+    "httpx>=0.28.1",
+    "openai>=3.37.0",
+    "python-dotenv>=1.2.4",
+    "pyyaml>=6.0.3",
+    "stripe>=16.0.0",
+    "uagents>=0.26.1",
+    "uagents-core>=0.4.12",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.17.2",
+]
