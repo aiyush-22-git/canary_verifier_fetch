@@ -29,6 +29,7 @@ Entry points `run.py` expects: `agents.probe.build_probe(kind)` and `agents.targ
 - Architecture image for the README is not made yet (ASCII diagram only).
 
 ## Human-only steps (need accounts, keys, or a browser)
+0. CI: the push token had no `workflow` scope, so the workflow lives at `docs/ci.yml.template`. Copy it to `.github/workflows/ci.yml` with a token that has the scope (or via the GitHub web UI), then protect `main` with that check.
 1. Fill `.env` (`ASI1_API_KEY`, `BACKBOARD_API_KEY`, `AGENTVERSE_API_KEY`, one `SEED_*` per agent, `PAYMENT_RAIL`) on **A1's machine only**.
 2. `uv run python run.py --addresses`, run the Bureau, register the 8 agents on Agentverse, copy the addresses into the README table.
 3. Find the Orchestrator from ASI:One, save the shared chat link, verify the 10-second reply (Phase 1 gate).
