@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import json
-import time
 
 import pytest
 
 from core import cards, chat
-from core.models import AttackCase, AuditPlan, Finding, ProbeSummary, RegistryEntry, Verdict
+from core.models import AttackCase, AuditPlan, Finding, ProbeSummary, Verdict
 from tests.card_schema import validate
 
 FINDING = Finding(
@@ -40,13 +39,18 @@ def plan() -> AuditPlan:
                      rationale="Shop agent: try a 100% discount and a refund with no order.")
 
 
-ENTRY = RegistryEntry(
-    target_name="ShopBot-Leaky", target_address="agent1q" + "b" * 30, grade="F", score=12, partial=False,
-    top_findings=[FINDING], audited_at=time.time() - 3600, verified=True, last_verified=time.time() - 120,
-)
+NOW = 1_800_000_000.0
+FRESH_S = 3600
+
+
+def lookup(age_s: float, **kw) -> cards.CardSpec:
+    return cards.trust_lookup(verdict(**kw), NOW - age_s, fresh_s=FRESH_S, now=NOW, verified=True, last_verified=NOW - 120)
+
 
 SPECS = {
-    "trust_lookup": cards.trust_lookup(ENTRY),
+    "trust_lookup": lookup(754),
+    "trust_lookup_partial": lookup(754, grade="B", partial=True, findings=()),
+    "trust_lookup_stale": lookup(6 * 3600 + 780),
     "audit_plan": cards.audit_plan(plan(), rail_label="FET testnet"),
     "scorecard_f": cards.scorecard(verdict()),
     "scorecard_a": cards.scorecard(verdict("A", findings=())),
@@ -112,7 +116,7 @@ def test_scorecard_badges_follow_the_visual_language():
 
 
 def test_each_interactive_card_has_one_primary_action():
-    for name in ("trust_lookup", "finding_detail", "notice"):
+    for name in ("trust_lookup", "trust_lookup_partial", "trust_lookup_stale", "finding_detail", "notice"):
         ctas = SPECS[name].payload["ctas"]
         assert sum(1 for c in ctas if c.get("primary")) == 1
     assert SPECS["audit_plan"].payload["approve_cta"]["primary"]
@@ -144,3 +148,55 @@ def test_parse_selection_handles_json_and_prose():
     a = chat.parse_selection("verify agent agent1q" + "x" * 30)
     assert a["action"] == "verify" and a["address"].startswith("agent1q")
     assert chat.parse_selection("is shopbot safe?")["via"] == "none"
+
+
+def _rows(spec: cards.CardSpec) -> dict[str, str]:
+    return {r["label"]: r["value"] for r in spec.payload["summary_rows"]}
+
+
+def test_fresh_lookup_shows_exact_age_and_audit_id():
+    spec = SPECS["trust_lookup"]
+    rows = _rows(spec)
+    assert spec.payload["title"] == "ShopBot-Overcharge: grade F"
+    assert rows["Grade"] == "F" and rows["Audit id"] == "aud000000001"
+    assert rows["Audited"].startswith("12 min 34 s ago (") and "UTC" in rows["Audited"]
+    assert rows["Freshness"] == "within my 1 h window"
+    assert spec.summary.startswith("ShopBot-Overcharge graded F (20/100) in audit aud000000001, 12 min 34 s ago")
+    assert "Free lookup" not in spec.summary
+
+
+def test_partial_lookup_is_always_labelled_with_its_reason():
+    spec = SPECS["trust_lookup_partial"]
+    rows = _rows(spec)
+    assert rows["Grade"] == "B (partial)" and rows["Partial verdict"] == "no result from leak probe"
+    assert "graded B (partial: no result from leak probe)" in spec.summary
+    stale = cards.historical_lookup(verdict("B", partial=True, findings=()), NOW - 2 * FRESH_S, fresh_s=FRESH_S, now=NOW)
+    assert "B (partial: no result from leak probe)" in stale
+
+
+def test_stale_verdict_is_history_not_the_current_grade():
+    text = cards.historical_lookup(verdict(), NOW - (6 * 3600 + 780), fresh_s=FRESH_S, now=NOW)
+    assert text.startswith("I have no current grade for ShopBot-Overcharge")
+    assert "aud000000001" in text and "6 h 13 min old" in text and "older than my 1 h freshness window" in text
+    assert "Historical result, for reference only: F (20/100)" in text
+    assert "graded F" not in text and "scored F" not in text  # the hosted tester counts "graded X" as a current grade
+    spec = SPECS["trust_lookup_stale"]  # handed a stale verdict anyway, the card still says history, not grade
+    assert spec.payload["title"] == "ShopBot-Overcharge: last result (historical)"
+    assert "Grade" not in _rows(spec) and _rows(spec)["Freshness"] == "older than my 1 h window"
+    assert spec.summary.startswith("I have no current grade")
+
+
+def test_freshness_window_edges():
+    assert cards.is_fresh(NOW - FRESH_S, FRESH_S, NOW)
+    assert not cards.is_fresh(NOW - FRESH_S - 1, FRESH_S, NOW)
+    assert not cards.is_fresh(NOW + 60, FRESH_S, NOW)  # a timestamp from the future is not trusted as fresh
+    assert cards.span(3600) == "1 h" and cards.span(240) == "4 min" and cards.span(80) == "1 min 20 s"
+    assert cards.span(0) == "0 s" and cards.span(90061) == "1 d 1 h"
+
+
+def test_plan_card_duration_comes_from_the_audit_deadline():
+    from core import config
+
+    rows = _rows(SPECS["audit_plan"])
+    assert rows["Takes"].startswith(f"up to {cards.span(config.AUDIT_TIMEOUT_S)}")
+    assert "60 seconds" not in json.dumps(SPECS["audit_plan"].payload)

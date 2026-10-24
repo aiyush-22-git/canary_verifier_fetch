@@ -73,6 +73,9 @@ PROBE_TIMEOUT_S = _env_int("PROBE_TIMEOUT_S", 15)
 AUDIT_TIMEOUT_S = _env_int("AUDIT_TIMEOUT_S", 80)  # judge finalises a partial verdict after this
 MAX_CASES_PER_AUDIT = 12
 CACHE_TTL_S = _env_int("CACHE_TTL_S", 24 * 3600)
+# A trust lookup presents a stored grade as current only while it is this fresh. An older verdict is shown as history
+# and the reply offers a fresh audit instead (a live answer once showed a 6-hour-old grade from a buggy run as current).
+VERDICT_FRESH_S = _env_int("VERDICT_FRESH_S", 3600)
 REVERIFY_INTERVAL_S = _env_int("REVERIFY_INTERVAL_S", 600)  # 10 min demo, daily in real use
 PENDING_AUDIT_TTL_S = 1800
 

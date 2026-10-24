@@ -36,7 +36,7 @@ LIMIT = 100_000  # Agentverse hosted code: "keep code under 100KB"
 ENTRY: dict[str, tuple[str, tuple[str, ...]]] = {
     "orchestrator": (
         "from agents.orchestrator import build_orchestrator\nbuild_orchestrator(agent=agent)",
-        ("ASI1_API_KEY", "PAYMENT_RAIL", "AUDIT_TIMEOUT_S", "PROBE_TIMEOUT_S",  # payment secrets: this bundle only
+        ("ASI1_API_KEY", "PAYMENT_RAIL", "AUDIT_TIMEOUT_S", "PROBE_TIMEOUT_S", "VERDICT_FRESH_S",  # payment secrets: this bundle only
          "DODO_PAYMENTS_API_KEY", "DODO_PRODUCT_ID", "DODO_ENV", "AUDIT_PRICE_USD", "DODO_RETURN_URL", "DODO_SEND_REQUESTPAYMENT"),
     ),
     "judge": ("from agents.judge import build_judge\nbuild_judge(agent=agent)", ("ASI1_API_KEY",)),
@@ -209,6 +209,7 @@ HOSTED_DEFAULTS = {
     # Every hop between hosted agents takes 3 to 10 s, so the local defaults (80 s audit, 15 s per case) always time out.
     "AUDIT_TIMEOUT_S": "240",
     "PROBE_TIMEOUT_S": "45",
+    "VERDICT_FRESH_S": "3600",  # a trust lookup shows a stored grade as current only this long (core/config.py)
 }
 
 

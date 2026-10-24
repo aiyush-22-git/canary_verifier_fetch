@@ -15,7 +15,8 @@ from __future__ import annotations
 import time
 from typing import Any, NamedTuple
 
-from core.models import AuditPlan, Finding, RegistryEntry, Verdict
+from core import config
+from core.models import AuditPlan, Finding, Verdict
 
 PASS_GRADES = ("A", "B")
 QUOTE_MAX = 220
@@ -27,12 +28,25 @@ class CardSpec(NamedTuple):
     summary: str
 
 
-def _ago(ts: float) -> str:
-    secs = max(0, int(time.time() - ts))
-    for unit, size in (("d", 86400), ("h", 3600), ("min", 60)):
-        if secs >= size:
-            return f"{secs // size}{unit} ago"
-    return "just now"
+def span(secs: float, parts: int = 2) -> str:
+    """A duration in its largest units: 3600 -> '1 h', 240 -> '4 min', 22385 -> '6 h 13 min', 42 -> '42 s'."""
+    rest, out = max(0, int(secs)), []
+    for unit, size in (("d", 86400), ("h", 3600), ("min", 60), ("s", 1)):
+        if rest >= size or (unit == "s" and not out):
+            out.append(f"{rest // size} {unit}")
+            rest %= size
+        if out and (len(out) == parts or not rest):
+            break
+    return " ".join(out)
+
+
+def _utc(ts: float) -> str:
+    return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(ts))
+
+
+def is_fresh(audited_at: float, fresh_s: int, now: float) -> bool:
+    """A stored verdict counts as the current grade only inside the freshness window (config.VERDICT_FRESH_S)."""
+    return 0 <= now - audited_at <= fresh_s
 
 
 def _clip(s: str, n: int = QUOTE_MAX) -> str:
@@ -51,32 +65,64 @@ def _grade_line(grade: str, partial: bool) -> str:
 # --- 1. trust lookup (detail) -------------------------------------------------------------
 
 
-def trust_lookup(entry: RegistryEntry) -> CardSpec:
+def _result_line(v: Verdict) -> str:
+    """'F (39/100)' or 'B (partial: no result from leak probe) (80/100)': a partial verdict always says so and why."""
+    partial = f" (partial: {_clip(v.partial_reason or 'reason not recorded', 120)})" if v.partial else ""
+    return f"{v.grade}{partial} ({v.score}/100)"
+
+
+def trust_lookup(v: Verdict, audited_at: float, *, fresh_s: int, now: float, verified: bool = False,
+                 last_verified: float = 0.0) -> CardSpec:
+    """A stored verdict inside the freshness window, with its exact age and audit id. The Orchestrator sends
+    `historical_lookup` instead for an older one; if this is ever handed a stale verdict it labels it historical."""
+    fresh = is_fresh(audited_at, fresh_s, now)
+    age = f"{span(now - audited_at)} ago ({_utc(audited_at)})"
     rows = [
-        {"label": "Grade", "value": _grade_line(entry.grade, entry.partial)},
-        {"label": "Score", "value": f"{entry.score}/100"},
-        {"label": "Last audited", "value": _ago(entry.audited_at)},
+        {"label": "Grade" if fresh else "Historical grade (not current)", "value": _grade_line(v.grade, v.partial)},
+        {"label": "Score", "value": f"{v.score}/100"},
     ]
-    if entry.verified:
-        rows.append({"label": "Owner verified", "value": f"yes, re-tested {_ago(entry.last_verified)}"})
-    for i, f in enumerate(entry.top_findings[:3], 1):
+    if v.partial:
+        rows.append({"label": "Partial verdict", "value": _clip(v.partial_reason or "reason not recorded", 200)})
+    if v.total:
+        rows.append({"label": "Checks", "value": f"{v.passed} of {v.total} passed"})
+    rows += [
+        {"label": "Audit id", "value": v.audit_id},
+        {"label": "Audited", "value": age},
+        {"label": "Freshness", "value": f"{'within' if fresh else 'older than'} my {span(fresh_s)} window"},
+    ]
+    if verified:
+        rows.append({"label": "Owner verified", "value": f"yes, last re-test {span(now - last_verified)} ago"})
+    for i, f in enumerate(v.findings[:3], 1):
         rows.append({"label": f"Finding {i}: {f.title}", "value": f'"{_clip(f.evidence, 120)}"'})
-    if not entry.top_findings:
+    if not v.findings:
         rows.append({"label": "Findings", "value": "none"})
     payload = {
-        "title": f"{entry.target_name}: grade {entry.grade}",
+        "title": f"{v.target_name}: grade {_grade_line(v.grade, v.partial)}" if fresh
+        else f"{v.target_name}: last result (historical)",
         "summary_rows": rows,
         "ctas": [
             {
                 "label": "Run a fresh audit",
-                "selection": {"action": "run_fresh", "address": entry.target_address},
+                "selection": {"action": "run_fresh", "address": v.target_address},
                 "primary": True,
             }
         ],
     }
-    return CardSpec(
-        "detail", payload,
-        f"{entry.target_name} scored {entry.grade} ({entry.score}/100), audited {_ago(entry.audited_at)}. Free lookup.",
+    if fresh:
+        text = f"{v.target_name} graded {_result_line(v)} in audit {v.audit_id}, {age}."
+    else:
+        text = historical_lookup(v, audited_at, fresh_s=fresh_s, now=now)
+    return CardSpec("detail", payload, text)
+
+
+def historical_lookup(v: Verdict, audited_at: float, *, fresh_s: int, now: float) -> str:
+    """Plain text for a verdict older than the freshness window: says so first, labels the old result as history,
+    and hands over to the fresh audit plan (the one primary action)."""
+    top = f' Top finding then: {v.findings[0].title}.' if v.findings else ""
+    return (
+        f"I have no current grade for {v.target_name}: my last finished audit ({v.audit_id}, {_utc(audited_at)}) is "
+        f"{span(now - audited_at)} old, older than my {span(fresh_s)} freshness window, so I won't present it as current. "
+        f"Historical result, for reference only: {_result_line(v)}.{top} A fresh audit is the way to get a current grade."
     )
 
 
@@ -93,7 +139,7 @@ def audit_plan(plan: AuditPlan, *, rail_label: str) -> CardSpec:
     rows = [
         {"label": "Target", "value": plan.target_name},
         {"label": "Tests", "value": tests},
-        {"label": "Takes", "value": "about 60 seconds"},
+        {"label": "Takes", "value": f"up to {span(config.AUDIT_TIMEOUT_S)}; results stream in as each probe finishes"},
         {"label": "Price", "value": "Free" if free else f"{plan.price_usd} USD ({rail_label}{', test funds' if 'test' in rail_label else ''})"},
     ]
     if plan.rationale:

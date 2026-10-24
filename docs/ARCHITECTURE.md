@@ -67,7 +67,9 @@ decides the soft cases, and it must cite evidence.
 
 1. **ASI:One → Orchestrator** `ChatMessage("Is ShopBot-Overcharge safe to pay?")`. The Orchestrator ACKs it.
 2. **Intent (asi1)** → `audit` + agent ref; `intent.resolve_agent` maps the name to an address via the registry. A plain
-   lookup is answered free and immediately from cached verdicts (`cards.trust_lookup`).
+   lookup is answered free from the registry: a finished verdict younger than `VERDICT_FRESH_S` (default 1 h) is shown
+   with its audit id and age (`cards.trust_lookup`); an older one is labelled historical and the fresh audit plan follows
+   (`cards.historical_lookup`). Partial verdicts always carry their reason; verdicts that graded nothing are never shown.
 3. **Consent gate**: only demo targets and owner-verified agents (a one-time code put in their Agentverse profile) are
    tested.
 4. **Plan (asi1)** → `AuditPlan` → `cards.audit_plan` with *Pay and run* / *Cancel*.
@@ -113,7 +115,7 @@ exchanged between Canary agents; Chat and Payment Protocol messages are used tow
 `core/config.py` reads, in order, the hosted bundle's embedded `hosted_secrets.SECRETS`, then the environment
 (`.env`), then the defaults. Key variables: `ASI1_API_KEY`, `ASI1_MODEL`, `ASI1_TARGET_MODEL`, `LLM_TOKEN_CAP`,
 `AGENTVERSE_API_KEY`, `SEED_*` (one per agent), `PAYMENT_RAIL` (`dodo|fet|stripe|free|none`), `DODO_PAYMENTS_API_KEY`,
-`DODO_PRODUCT_ID`, `PROBE_TIMEOUT_S`, `AUDIT_TIMEOUT_S`, `REVERIFY_INTERVAL_S`. See `.env.example`.
+`DODO_PRODUCT_ID`, `PROBE_TIMEOUT_S`, `AUDIT_TIMEOUT_S`, `REVERIFY_INTERVAL_S`, `VERDICT_FRESH_S`. See `.env.example`.
 
 ## 7. Ship checklist
 
