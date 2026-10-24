@@ -70,3 +70,30 @@ def test_orchestrator_bundle_embeds_the_dodo_rail():
     assert "pdt_x" not in bundle_text(build.build_agent("judge", {}, env)[0])
     with pytest.raises(SystemExit):
         build.build_agent("orchestrator", {}, {**env, "DODO_PRODUCT_ID": ""})
+
+
+def _without_docstrings(tree):
+    import ast
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef) and node.body:
+            first = node.body[0]
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
+                node.body = node.body[1:] or [ast.Pass()]
+    return tree
+
+
+@pytest.mark.parametrize("path", sorted(p for d in ("core", "agents") for p in (ROOT / d).glob("*.py")) + [ROOT / "tests" / "hosted_tester.py"],
+                         ids=lambda p: p.name)
+def test_minify_keeps_the_code_and_the_original_fstring_quoting(path):
+    """minify() edits the text rather than ast.unparse(): unparse on 3.12 nests same-quote f-strings that the hosted
+    Python (3.10/3.11) cannot parse. Same AST minus docstrings, no comments left."""
+    import ast
+    import io
+    import tokenize
+
+    src = path.read_text(encoding="utf-8")
+    out = build.minify(src)
+    assert ast.dump(ast.parse(out)) == ast.dump(_without_docstrings(ast.parse(src)))
+    assert not [t for t in tokenize.generate_tokens(io.StringIO(out).readline) if t.type == tokenize.COMMENT]
+    assert len(out) <= len(src)

@@ -256,7 +256,8 @@ def build_orchestrator(registry: Registry | None = None, agent=None):
             return True
 
         if action == "check_payment":
-            row = reg.get_pending(audit_id, sender)
+            # The checkout link outlives the plan's TTL: a buyer who paid late still gets the audit they paid for.
+            row = reg.get_pending(audit_id, sender) or reg.paid_checkout_pending(audit_id, sender)
             sess = reg.dodo_session(audit_id, sender) if row else None
             if sess and await already_started(ctx, sender, row):
                 return True

@@ -14,10 +14,12 @@ from __future__ import annotations
 import argparse
 import ast
 import base64
+import io
 import json
 import re
 import sys
 import time
+import tokenize
 import zlib
 from pathlib import Path
 
@@ -142,14 +144,41 @@ def imports_of(source: str) -> set[str]:
 
 
 def minify(source: str) -> str:
-    """Drop docstrings and comments (same behaviour, about 25% smaller): the hosted editor has a size limit."""
-    tree = ast.parse(source)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
-            first = node.body[0] if node.body else None
-            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
-                node.body = node.body[1:] or [ast.Pass()]
-    return ast.unparse(tree) + "\n"
+    """Drop docstrings and comments (same behaviour, smaller): the hosted editor has a size limit.
+
+    Edits the original text instead of ast.unparse(): unparse on Python 3.12 can emit PEP 701 f-strings (the same quote
+    nested inside the braces) that Python 3.10/3.11, the hosted runtime, cannot parse."""
+    lines = source.splitlines(keepends=True)
+    cut: dict[int, int] = {}  # 0-based line -> column where a comment starts
+    inside: set[int] = set()  # lines inside a multi-line string: kept verbatim, blank or not
+    for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+        if tok.type == tokenize.COMMENT:
+            cut[tok.start[0] - 1] = tok.start[1]
+        elif tok.end[0] > tok.start[0]:
+            inside.update(range(tok.start[0], tok.end[0]))
+    drop: dict[int, str] = {}  # 0-based first line of a docstring -> replacement ("pass" keeps the body non-empty)
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef) and node.body:
+            first = node.body[0]
+            if not (isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str)):
+                continue
+            start, end = first.lineno - 1, first.end_lineno - 1
+            alone = not lines[start][: first.col_offset].strip() and not lines[end][first.end_col_offset:].strip()
+            if alone:  # the docstring owns its lines: replace them (a one-line `def f(): """x"""` is left alone)
+                for i in range(start, end + 1):
+                    drop[i] = ""
+                drop[start] = " " * first.col_offset + "pass\n" if len(node.body) == 1 else ""
+    out = []
+    for i, line in enumerate(lines):
+        if i in drop:
+            out.append(drop[i])
+        elif i in cut:
+            kept = line[: cut[i]].rstrip()
+            if kept:
+                out.append(kept + "\n")
+        elif line.strip() or i in inside:
+            out.append(line)
+    return "".join(out)
 
 
 def literal(text: str) -> str:

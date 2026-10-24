@@ -168,3 +168,17 @@ def test_commit_must_name_the_session_we_issued(dodo):
         assert not v.ok and "issued for this audit" in v.reason
     assert not payments.verify_commit(commit(sid, "fet_direct"), "agent1qbuyer", "aud000000001", "w", dodo_session=sid).ok
     assert not payments.verify_commit(commit(sid), "agent1qbuyer", "aud000000001", "w", dodo_session="").ok
+
+
+def test_a_checkout_outlives_the_plan_ttl_for_the_payment_check(monkeypatch):
+    """A buyer who pays after the plan's TTL must still be able to prove it: the paid check ignores the TTL."""
+    from core.registry import Registry
+
+    reg = Registry(":memory:")
+    reg.create_pending("aud000000009", "agent1qbuyer", "{}")
+    assert reg.paid_checkout_pending("aud000000009", "agent1qbuyer") is None  # no checkout, nothing to check
+    reg.save_dodo_session("aud000000009", "agent1qbuyer", "cks_1", "https://test.checkout.dodopayments.com/session/cks_1")
+    monkeypatch.setattr(config, "PENDING_AUDIT_TTL_S", -1)  # the plan has expired
+    assert reg.get_pending("aud000000009", "agent1qbuyer") is None
+    assert reg.paid_checkout_pending("aud000000009", "agent1qbuyer")["state"] == "awaiting_payment"
+    assert reg.paid_checkout_pending("aud000000009", "agent1qsomeone-else") is None
