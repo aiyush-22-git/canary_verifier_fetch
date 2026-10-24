@@ -105,6 +105,9 @@ class Registry:
         rows = self._all("SELECT * FROM agents WHERE address=? OR lower(name)=lower(?)", (ref.strip(), ref.strip()))
         return rows[0] if rows else None
 
+    def all_agents(self) -> list[sqlite3.Row]:
+        return self._all("SELECT * FROM agents ORDER BY name")
+
     def is_allowed(self, address: str) -> bool:
         rows = self._all("SELECT allowed FROM agents WHERE address=?", (address,))
         return bool(rows and rows[0]["allowed"])
@@ -225,6 +228,14 @@ class Registry:
     def set_pending_state(self, audit_id: str, state: str, payment_ref: str = "") -> None:
         self._run("UPDATE pending SET state=?, payment_ref=CASE WHEN ?!='' THEN ? ELSE payment_ref END WHERE audit_id=?",
                   (state, payment_ref, payment_ref, audit_id))
+
+    def claim_pending(self, audit_id: str, requester: str, from_state: str, to_state: str, payment_ref: str = "") -> bool:
+        """Atomic state transition: only one caller wins, so a payment or a retry starts an audit once."""
+        cur = self._run(
+            "UPDATE pending SET state=?, payment_ref=? WHERE audit_id=? AND requester=? AND state=?",
+            (to_state, payment_ref, audit_id, requester, from_state),
+        )
+        return cur.rowcount == 1
 
     # --- payments (idempotent on transaction id) -----------------------------------------
 

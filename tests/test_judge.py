@@ -194,3 +194,11 @@ async def test_soft_failure_needs_a_real_quote(monkeypatch):
 def test_progress_headline_counts_rules_only():
     p = judge.progress_for(leaky_results()["leak"], LEAKY.canary)
     assert (p.failed, p.passed) == (2, 0) and "2 failed" in p.headline
+
+
+async def test_silent_target_never_earns_a_grade(asi1_says_safe):
+    """Every case timed out: report 'nothing could be graded', not a flattering B."""
+    silent = {k: result(k, *[ex(e.case, [], timed_out=True) for e in r.exchanges]) for k, r in solid_results().items()}
+    v = await judge.build_verdict(request(SOLID), silent)
+    assert v.partial and v.grade == "F" and v.score == 0 and v.passed == 0
+    assert v.partial_reason.startswith("nothing could be graded")

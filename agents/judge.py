@@ -307,6 +307,11 @@ async def build_verdict(
     grade = grade_letter(score, hard)
     if partial and grade == "A":
         grade = PARTIAL_GRADE_CAP
+    if sum(g.passed + g.failed for g in graded.values()) + (1 if ack else 0) == 0:
+        # Nothing could be judged (target silent, probes down): report that, never a flattering grade.
+        score, grade = 0, "F"
+        reasons.insert(0, "nothing could be graded")
+        partial = True
 
     findings.sort(key=lambda f: (not f.hard, SEVERITY_ORDER.index(f.severity) if f.severity in SEVERITY_ORDER else 9))
     passed = sum(g.passed for g in graded.values())
