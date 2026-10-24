@@ -58,20 +58,80 @@ def test_paid_checkout_verifies_and_returns_the_payment_id(dodo):
 
 
 @pytest.mark.parametrize(
-    ("kw", "reason"),
+    ("kw", "reason", "kind"),
     [
-        ({"amount": 99}, "below the audit price"),
-        ({"currency": "EUR"}, "unexpected currency"),
-        ({"status": "failed"}, "not paid yet"),
-        ({"status": "processing"}, "not paid yet"),
-        ({"metadata": {"audit_id": "someone-elses"}}, "different audit"),
+        ({"amount": 99}, "below the audit price", "refused"),
+        ({"currency": "EUR"}, "unexpected currency", "refused"),
+        ({"status": "failed"}, "payment failed", "failed"),
+        ({"status": "cancelled"}, "payment cancelled", "failed"),
+        ({"status": "processing"}, "not paid yet", "pending"),
+        ({"status": "requires_customer_action"}, "not paid yet", "pending"),
+        ({"metadata": {"audit_id": "someone-elses"}}, "different audit", "refused"),
     ],
 )
-def test_bad_payments_are_refused(dodo, kw, reason):
+def test_bad_payments_are_refused(dodo, kw, reason, kind):
     sid = new_session(dodo)
     dodo.pay(sid, **kw)
     v = payments.verify_dodo(sid, "aud000000001")
-    assert not v.ok and reason in v.reason
+    assert not v.ok and reason in v.reason and v.kind == kind
+
+
+def test_unpaid_and_unreachable_say_what_to_do(dodo):
+    sid = new_session(dodo)
+    assert payments.verify_dodo(sid, "aud000000001").kind == "unpaid"
+    dodo.fail = True
+    assert payments.verify_dodo(sid, "aud000000001").kind == "unreachable"
+
+
+def test_session_keeps_the_buyer_in_usd_without_discount_codes(dodo, monkeypatch):
+    calls = []
+
+    def spy(method, path, body=None):
+        calls.append(body)
+        return dodo(method, path, body)
+
+    monkeypatch.setattr(payments, "_dodo_http", spy)
+    payments.create_dodo_session("aud000000001", "agent1qbuyer")
+    body = calls[0]
+    assert body["billing_currency"] == "USD"
+    assert body["feature_flags"] == {"allow_currency_selection": False, "allow_discount_code": False}
+
+
+class _Resp:
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+
+    def read(self) -> bytes:
+        return self.data
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> None:
+        return None
+
+
+def test_http_client_is_stdlib_with_a_timeout_and_bearer_auth(monkeypatch):
+    """The hosted runtime has no httpx/requests guarantee: _dodo_http must be urllib, JSON in and out, bounded."""
+    import json
+    import urllib.request
+
+    seen = {}
+
+    def fake_urlopen(req, timeout):
+        seen.update(url=req.full_url, method=req.get_method(), timeout=timeout, body=json.loads(req.data),
+                    auth=req.get_header("Authorization"), ctype=req.get_header("Content-type"), ua=req.get_header("User-agent"))
+        return _Resp(b'{"session_id": "cks_1", "checkout_url": "https://test.checkout.dodopayments.com/session/cks_1"}')
+
+    monkeypatch.setattr(config, "DODO_API_KEY", "dodo_test_key")
+    monkeypatch.setattr(config, "DODO_ENV", "test_mode")
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    out = payments._dodo_http("POST", "/checkouts", {"product_cart": []})
+    assert out["session_id"] == "cks_1"
+    assert seen["url"] == "https://test.dodopayments.com/checkouts" and seen["method"] == "POST"
+    assert seen["auth"] == "Bearer dodo_test_key" and seen["ctype"] == "application/json"
+    assert 0 < seen["timeout"] <= 15 and seen["ua"] and "urllib" not in seen["ua"].lower()
+    assert seen["body"] == {"product_cart": []}
 
 
 def test_a_payment_made_for_another_checkout_is_refused(dodo):
@@ -92,7 +152,7 @@ def test_dodo_lookup_failure_fails_closed(dodo):
     dodo.pay(sid)
     dodo.fail = True
     v = payments.verify_dodo(sid, "aud000000001")
-    assert not v.ok and "lookup failed" in v.reason
+    assert not v.ok and "couldn't reach Dodo" in v.reason and v.kind == "unreachable"
 
 
 def commit(tx: str, method: str = "dodo") -> CommitPayment:
@@ -108,3 +168,17 @@ def test_commit_must_name_the_session_we_issued(dodo):
         assert not v.ok and "issued for this audit" in v.reason
     assert not payments.verify_commit(commit(sid, "fet_direct"), "agent1qbuyer", "aud000000001", "w", dodo_session=sid).ok
     assert not payments.verify_commit(commit(sid), "agent1qbuyer", "aud000000001", "w", dodo_session="").ok
+
+
+def test_a_checkout_outlives_the_plan_ttl_for_the_payment_check(monkeypatch):
+    """A buyer who pays after the plan's TTL must still be able to prove it: the paid check ignores the TTL."""
+    from core.registry import Registry
+
+    reg = Registry(":memory:")
+    reg.create_pending("aud000000009", "agent1qbuyer", "{}")
+    assert reg.paid_checkout_pending("aud000000009", "agent1qbuyer") is None  # no checkout, nothing to check
+    reg.save_dodo_session("aud000000009", "agent1qbuyer", "cks_1", "https://test.checkout.dodopayments.com/session/cks_1")
+    monkeypatch.setattr(config, "PENDING_AUDIT_TTL_S", -1)  # the plan has expired
+    assert reg.get_pending("aud000000009", "agent1qbuyer") is None
+    assert reg.paid_checkout_pending("aud000000009", "agent1qbuyer")["state"] == "awaiting_payment"
+    assert reg.paid_checkout_pending("aud000000009", "agent1qsomeone-else") is None

@@ -5,6 +5,10 @@ functional checks (greeting, lookup, a free audit per demo target, a forged sele
 (30 simultaneous greetings, 15 simultaneous lookups, 3 simultaneous audits, junk and oversized input), then a liveness
 ping. Every measurement is logged as `[RESULT] ...`; read them with `avctl hosting logs`. State lives in agent storage
 because a hosted agent loses its globals between messages.
+
+On the Dodo rail the tester never pays and never fakes a payment: when "Pay and run" returns a checkout card it presses
+"I've paid" unpaid (must be refused, no audit may start), cancels, and logs "awaiting real payment" with the checkout
+host only. The paid path is tested by a human paying a checkout in test mode.
 """
 
 from __future__ import annotations
@@ -47,6 +51,12 @@ SCRIPT = [
 ]
 
 
+CHECKOUT = re.compile(r"https://([^/\s]*dodopayments\.com)/")
+CHECKOUT_URL = re.compile(r"https://\S*dodopayments\.com/\S*")
+UNPAID = r"can't see your payment|not paid yet|still processing"
+RAN = r"graded [A-F]|Testing .+ live:"  # an audit started or finished
+
+
 def _orch() -> str:
     return config.agent_address("orchestrator")
 
@@ -78,6 +88,27 @@ def _hit(entry: dict, rx: str | None) -> bool:
     return bool(re.search(rx, blob, re.I)) if rx else True
 
 
+async def _dodo_unpaid(ctx: Context, S: dict, label: str, inbox: list, now: float) -> None:
+    """Phase 3: the unpaid "I've paid" must be refused; then cancel (phase 4) and expect a cancellation. An audit that
+    starts at any point is a FAIL: it would mean an audit ran without payment. The real paid path needs a human."""
+    after = inbox[S["n3"]:]
+    if any(re.search(RAN, e["text"]) for e in after):
+        _result(ctx, S, label, False, "an audit started although nothing was paid")
+    elif S["phase"] == 3 and any(re.search(UNPAID, e["text"], re.I) for e in after):
+        S["phase"], S["n3"], S["t3"] = 4, len(inbox), now
+        await _say(ctx, json.dumps({"action": "cancel", "audit_id": S["pay"]["audit_id"]}))
+        return
+    elif S["phase"] == 4 and any(re.search(r"Cancelled", e["text"]) for e in after):
+        _result(ctx, S, label, True, f"dodo: checkout at {S['host']}, unpaid 'I've paid' refused, plan cancelled. "
+                "Awaiting real payment: pay a checkout by hand to test the paid path")
+    elif now - S["t3"] > 60:
+        _result(ctx, S, label, False, f"no {'refusal of the unpaid check' if S['phase'] == 3 else 'cancellation'} in 60s")
+    else:
+        return
+    S["i"] += 1
+    S["phase"], S["t0"], S["n"] = 0, 0.0, len(inbox)
+
+
 def attach(agent) -> None:
     version = config._env("TESTER_VERSION", "dev")
     script = SCRIPT[:3] if config._env("TESTER_SCRIPT") == "quick" else SCRIPT  # quick: hello, lookup, one audit
@@ -85,14 +116,20 @@ def attach(agent) -> None:
     async def on_text(ctx: Context, sender: str, body: str, msg) -> None:
         inbox = _inbox(ctx)
         cards = chat.extract_cards(msg)
-        entry = {"t": time.time(), "text": body[:400], "cards": [c["kind"] for c in cards]}
+        entry = {"t": time.time(), "text": CHECKOUT_URL.sub("<checkout link>", body)[:400], "cards": [c["kind"] for c in cards]}
         for c in cards:  # remember the primary action of a review card so the script can click it
             cta = (c["payload"].get("approve_cta") or {}).get("selection")
             if c["kind"] == "review" and cta:
                 entry["cta"] = cta
+            for x in c["payload"].get("ctas") or []:  # Dodo rail: the payment card's "I've paid" button
+                if (x.get("selection") or {}).get("action") == "check_payment":
+                    entry["pay"] = x["selection"]
+        m = CHECKOUT.search(body)
+        if m:
+            entry["host"] = m.group(1)  # the host only: the full checkout URL is the buyer's, not for logs
         inbox.append(entry)
         ctx.storage.set("I", inbox[-700:])
-        ctx.logger.info(f"[reply] +{len(inbox)} {body[:140]!r} cards={entry['cards']}")
+        ctx.logger.info(f"[reply] +{len(inbox)} {entry['text'][:140]!r} cards={entry['cards']}")
 
     agent.include(chat.make_chat_protocol(on_text), publish_manifest=True)
 
@@ -168,10 +205,17 @@ def attach(agent) -> None:
                 elif waited > 60:
                     _result(ctx, S, label, False, "no audit plan card in 60s")
                     advance()
+            elif S["phase"] >= 3:  # Dodo rail: never pay, never fake a payment; check that unpaid starts nothing
+                await _dodo_unpaid(ctx, S, label, inbox, now)
             else:
                 after = inbox[S["n2"]:]
+                pay = next((e for e in after if e.get("pay")), None)
                 done = next((e for e in after if re.search(r"graded [A-F]|couldn't test|didn't finish", e["text"])), None)
-                if done:
+                if pay and not done:  # a checkout card, not an audit: press "I've paid" without paying
+                    S["pay"], S["host"] = pay["pay"], next((e["host"] for e in after if e.get("host")), "?")
+                    S["phase"], S["n3"], S["t3"] = 3, len(inbox), now
+                    await _say(ctx, json.dumps(S["pay"]))
+                elif done:
                     m = re.search(r"graded ([A-F])", done["text"])
                     grade = m.group(1) if m else "?"
                     progress = sum(1 for e in after if re.search(r"probe finished", e["text"], re.I))
@@ -195,7 +239,17 @@ def attach(agent) -> None:
             else:
                 after = inbox[S["n2"]:]
                 cards = [e for e in after if re.search(r"graded [A-F]", e["text"])]
-                if len(cards) >= len(arg) or now - S["t_click"] > timeout:
+                pays = [e for e in after if e.get("pay")]
+                if pays and not cards and (len(pays) >= len(arg) or now - S["t_click"] > 60):
+                    # Dodo rail: each click must give its own checkout and start nothing; cancel them all
+                    ran = [e for e in after if re.search(RAN, e["text"])]
+                    for e in pays:
+                        await _say(ctx, json.dumps({"action": "cancel", "audit_id": e["pay"]["audit_id"]}))
+                    ok = len(pays) >= len(arg) and not ran and len({e["pay"]["audit_id"] for e in pays}) == len(pays)
+                    _result(ctx, S, label, ok, f"dodo: {len(pays)}/{len(arg)} checkouts opened, {len(ran)} audits started "
+                            "without payment; awaiting real payment, all cancelled")
+                    advance()
+                elif len(cards) >= len(arg) or now - S["t_click"] > timeout:
                     grades = [re.search(r"graded ([A-F])", e["text"]).group(1) for e in cards]
                     _result(ctx, S, label, len(cards) >= len(arg), f"{len(cards)}/{len(arg)} scorecards, grades {grades}, {max([e['t'] for e in cards] or [now]) - S['t_click']:.0f}s")
                     advance()

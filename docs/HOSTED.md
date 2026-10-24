@@ -23,13 +23,22 @@ This writes `deploy/hosted/dist/<agent>/agent.py` (30 to 75 KB each) with your k
 them** (`dist/` is git-ignored). Each file is self-contained: no other files to upload.
 Check one without Agentverse: `cd /tmp && python -I <repo>/deploy/hosted/smoke.py <repo>/deploy/hosted/dist/judge/agent.py`.
 
+**Payments.** The Orchestrator's rail comes from `PAYMENT_RAIL` in `.env` (default `dodo`). With `dodo`, the builder embeds
+`DODO_PAYMENTS_API_KEY`, `DODO_PRODUCT_ID`, `DODO_ENV`, `AUDIT_PRICE_USD` (and `DODO_RETURN_URL` / `DODO_SEND_REQUESTPAYMENT`
+if set) into the Orchestrator's file only, and refuses to build it if the key or product id is missing. `DODO_ENV=test_mode`
+uses `test.dodopayments.com` (test cards, no real money); switching to `live_mode` is the owner's decision. `PAYMENT_RAIL=free`
+still works, only when set on purpose, with a loud warning: audits then run without payment.
+
 ## 3. Paste and start
 For each agent: open it > **Build** tab > replace the whole content of `agent.py` with the matching generated file > **Save** > **Start**.
 Order: targets, probes, Judge, then the Orchestrator last. Paste `dist/<agent>/README.md` into the agent's README tab if it exists.
 Look at the **Logs** of each agent after Start: there must be no traceback.
 
 ## 4. Test
-In ASI:One (or Agentverse chat with Canary-Orchestrator): `hello`, then `Is ShopBot-Solid safe to pay?`. For a paid audit use the Dodo test card.
+In ASI:One (or Agentverse chat with Canary-Orchestrator): `hello`, then `Is ShopBot-Solid safe to pay?`. For a paid audit: `Audit ShopBot-Leaky` > *Pay and run* > open the checkout link >
+pay with a Dodo test card > *I've paid, start the audit*. The Orchestrator asks Dodo itself (paid, this checkout, at least the price,
+USD) before any probe runs; an unpaid, processing, failed or underpaid checkout starts nothing and says what to do next.
+The hosted Canary-Tester never pays: on the Dodo rail it checks that an unpaid "I've paid" is refused and logs "awaiting real payment".
 Save the shared chat link and the 8 profile URLs for the submission.
 
 ## If something fails

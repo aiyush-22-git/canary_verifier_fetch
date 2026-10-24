@@ -371,6 +371,14 @@ class Registry:
         rows = self._all("SELECT * FROM dodo_sessions WHERE audit_id=? AND requester=?", (audit_id, requester))
         return rows[0] if rows else None
 
+    def paid_checkout_pending(self, audit_id: str, requester: str) -> sqlite3.Row | None:
+        """The pending row of an audit that has a Dodo checkout, ignoring the plan's TTL: a checkout link outlives the
+        plan, and a buyer who paid it after the TTL must still get the audit. Only for a payment check, never a start."""
+        if not self.dodo_session(audit_id, requester):
+            return None
+        rows = self._all("SELECT * FROM pending WHERE audit_id=? AND requester=?", (audit_id, requester))
+        return rows[0] if rows else None
+
     def payment_seen(self, tx_id: str) -> bool:
         return bool(self._all("SELECT 1 FROM payments WHERE tx_id=?", (tx_id,)))
 

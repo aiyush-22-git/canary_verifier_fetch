@@ -14,10 +14,12 @@ from __future__ import annotations
 import argparse
 import ast
 import base64
+import io
 import json
 import re
 import sys
 import time
+import tokenize
 import zlib
 from pathlib import Path
 
@@ -34,7 +36,8 @@ LIMIT = 100_000  # Agentverse hosted code: "keep code under 100KB"
 ENTRY: dict[str, tuple[str, tuple[str, ...]]] = {
     "orchestrator": (
         "from agents.orchestrator import build_orchestrator\nbuild_orchestrator(agent=agent)",
-        ("ASI1_API_KEY", "PAYMENT_RAIL", "AUDIT_TIMEOUT_S", "PROBE_TIMEOUT_S"),
+        ("ASI1_API_KEY", "PAYMENT_RAIL", "AUDIT_TIMEOUT_S", "PROBE_TIMEOUT_S",  # payment secrets: this bundle only
+         "DODO_PAYMENTS_API_KEY", "DODO_PRODUCT_ID", "DODO_ENV", "AUDIT_PRICE_USD", "DODO_RETURN_URL", "DODO_SEND_REQUESTPAYMENT"),
     ),
     "judge": ("from agents.judge import build_judge\nbuild_judge(agent=agent)", ("ASI1_API_KEY",)),
     "probe-injection": ('from agents.probe import attach\nattach(agent, "injection")', ()),
@@ -46,6 +49,30 @@ ENTRY: dict[str, tuple[str, tuple[str, ...]]] = {
     # not part of Canary: a hosted ASI:One stand-in that tests and hammers the live Orchestrator (tests/hosted_tester.py)
     "tester": ("from tests.hosted_tester import attach\nattach(agent)", ("TESTER_VERSION", "TESTER_SCRIPT")),
 }
+
+
+# Embedded when set, never reported as "empty in .env": core/config.py has a default, or they are opt-in.
+OPTIONAL = {"DODO_RETURN_URL", "DODO_SEND_REQUESTPAYMENT", "AUDIT_PRICE_USD"}
+RAILS = ("dodo", "fet", "stripe", "free", "none")
+
+
+def payment_rail(env: dict[str, str]) -> str:
+    """The Orchestrator's rail, from .env (default dodo, as in core/config.py). Exits with a clear message if dodo is
+    chosen but its keys are missing: a hosted Orchestrator must never quietly fall back to free audits."""
+    rail = (env.get("PAYMENT_RAIL") or "dodo").strip().lower()
+    if rail not in RAILS:
+        raise SystemExit(f"PAYMENT_RAIL={rail!r} in .env is not one of {', '.join(RAILS)}.")
+    if rail == "dodo":
+        absent = [k for k in ("DODO_PAYMENTS_API_KEY", "DODO_PRODUCT_ID") if not env.get(k)]
+        if absent:
+            raise SystemExit(f"PAYMENT_RAIL=dodo but {' and '.join(absent)} empty in .env: refusing to build the Orchestrator "
+                             "(it could not take payment). Set them, or set PAYMENT_RAIL=free on purpose.")
+        env["DODO_ENV"] = env.get("DODO_ENV") or "test_mode"
+    elif rail == "free":
+        print("\n*** WARNING: PAYMENT_RAIL=free in .env: the hosted Orchestrator will run audits WITHOUT payment. ***\n",
+              file=sys.stderr)
+    env["PAYMENT_RAIL"] = rail
+    return rail
 
 
 def agent_name(key: str) -> str:
@@ -117,14 +144,41 @@ def imports_of(source: str) -> set[str]:
 
 
 def minify(source: str) -> str:
-    """Drop docstrings and comments (same behaviour, about 25% smaller): the hosted editor has a size limit."""
-    tree = ast.parse(source)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
-            first = node.body[0] if node.body else None
-            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
-                node.body = node.body[1:] or [ast.Pass()]
-    return ast.unparse(tree) + "\n"
+    """Drop docstrings and comments (same behaviour, smaller): the hosted editor has a size limit.
+
+    Edits the original text instead of ast.unparse(): unparse on Python 3.12 can emit PEP 701 f-strings (the same quote
+    nested inside the braces) that Python 3.10/3.11, the hosted runtime, cannot parse."""
+    lines = source.splitlines(keepends=True)
+    cut: dict[int, int] = {}  # 0-based line -> column where a comment starts
+    inside: set[int] = set()  # lines inside a multi-line string: kept verbatim, blank or not
+    for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+        if tok.type == tokenize.COMMENT:
+            cut[tok.start[0] - 1] = tok.start[1]
+        elif tok.end[0] > tok.start[0]:
+            inside.update(range(tok.start[0], tok.end[0]))
+    drop: dict[int, str] = {}  # 0-based first line of a docstring -> replacement ("pass" keeps the body non-empty)
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef) and node.body:
+            first = node.body[0]
+            if not (isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str)):
+                continue
+            start, end = first.lineno - 1, first.end_lineno - 1
+            alone = not lines[start][: first.col_offset].strip() and not lines[end][first.end_col_offset:].strip()
+            if alone:  # the docstring owns its lines: replace them (a one-line `def f(): """x"""` is left alone)
+                for i in range(start, end + 1):
+                    drop[i] = ""
+                drop[start] = " " * first.col_offset + "pass\n" if len(node.body) == 1 else ""
+    out = []
+    for i, line in enumerate(lines):
+        if i in drop:
+            out.append(drop[i])
+        elif i in cut:
+            kept = line[: cut[i]].rstrip()
+            if kept:
+                out.append(kept + "\n")
+        elif line.strip() or i in inside:
+            out.append(line)
+    return "".join(out)
 
 
 def literal(text: str) -> str:
@@ -189,7 +243,9 @@ def build_agent(key: str, addresses: dict[str, str], env: dict[str, str]) -> tup
     sources = closure(entry_modules | {"core.config"} | ({"core.registry"} if registry else set()))
     for pkg in PACKAGES:
         sources.setdefault(pkg, "")
-    missing = [k for k in secret_keys if not env.get(k)]
+    if key == "orchestrator":
+        payment_rail(env)  # every caller (this script, avctl_deploy.py) gets the same refusal
+    missing = [k for k in secret_keys if not env.get(k) and k not in OPTIONAL]
     sources["hosted_addresses"] = f"ADDRESSES = {addresses!r}\n"
     sources["hosted_secrets"] = f"SECRETS = { {k: env[k] for k in secret_keys if env.get(k)}!r}\n"
     sources["bundle_data"] = data_module(key)
@@ -214,9 +270,11 @@ def main() -> int:
     args = ap.parse_args()
     addresses = json.loads(Path(args.addresses).read_text()) if args.addresses else {}
     env = read_env()
-    env["PAYMENT_RAIL"] = "free"  # hosted demo: free audits against malicious inputs, no payment rail
     env["TESTER_VERSION"] = str(int(time.time()))  # a new build makes the tester run its script again
     keys = [args.only] if args.only else [k for k in ENTRY if k != "tester"]
+    if "orchestrator" in keys:  # checked before anything is written: no half-built bundle that can't take payment
+        rail = payment_rail(env)
+        print(f"Orchestrator payment rail: {rail}" + (f" ({env['DODO_ENV']})" if rail == "dodo" else ""))
     DIST.mkdir(parents=True, exist_ok=True)
     problems = 0
     for key in keys:
@@ -233,7 +291,7 @@ def main() -> int:
         problems += bool(flag)
         print(f"{agent_name(key):<26} {size / 1000:6.1f} KB  {out / 'agent.py'}{flag}{note}")
     if key == "orchestrator" or "orchestrator" in keys:
-        absent = [k for k in ENTRY if k != "orchestrator" and k not in addresses]
+        absent = [k for k in ENTRY if k not in ("orchestrator", "tester") and k not in addresses]
         if absent:
             print(f"\nThe orchestrator needs the other agents' addresses (missing: {', '.join(absent)}).")
             print("Create those agents first, put their addresses in a JSON file, and re-run with --addresses.")
