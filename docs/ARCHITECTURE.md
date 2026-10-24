@@ -39,13 +39,12 @@ re-tested on a timer.
                                                   └───────────────────────────────────────────────────┘
 ```
 
-Two deployment shapes share the same code:
+Two deployment shapes share the same code; the user interface is ASI:One itself:
 
 | Mode | How | Network |
 |---|---|---|
 | Hosted (submission) | `deploy/hosted/build.py` bundles each agent into one self-contained `agent.py` pasted into an Agentverse hosted agent. `hosted_addresses.py` + `hosted_secrets.py` are embedded; `config.HOSTED` is true | every hop goes over Agentverse; registry lives in the agent's key-value storage |
 | Bureau | `run.py` runs all 8 agents in one uAgents Bureau; only the Orchestrator uses the mailbox | internal hops are local |
-| Web | `gradio_app.py` is a ninth agent ("Canary-Web") that relays a browser chat to the Orchestrator | mailbox |
 
 ## 2. Where asi1 is used (and where it is not)
 
