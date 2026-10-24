@@ -31,7 +31,8 @@ from core.registry import Registry, get_registry
 
 def help_text() -> str:
     """Only what this deployment really does: the price line follows the configured rail, the agents the allowlist."""
-    price = "free in this deployment" if payments.is_free() else f"{config.AUDIT_PRICE_USD} USD, paid via {payments.rail_label()} checkout"
+    how = "checkout" if payments.uses_checkout_link() else "Payment Protocol"
+    price = "free in this deployment" if payments.is_free() else f"{config.AUDIT_PRICE_USD} USD, paid via {payments.rail_label()} {how}"
     return (
         "I'm Canary, a security auditor for Agentverse agents. I only test agents whose owners opted in, I never ask for "
         "passwords or keys, and I only reply when you message me. You can ask:\n"

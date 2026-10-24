@@ -14,7 +14,7 @@ payment fraud, Agentverse reputation, agent due diligence, marketplace safety
 
 | You say | Canary does |
 |---|---|
-| "Is ShopBot-Solid safe to pay?" | Free lookup. If the agent's last finished audit is under an hour old, shows its grade with the audit id and exact age. If it is older, says so, shows it labelled as historical (not a current grade) and offers a fresh audit plan. An agent never tested gets a first audit plan |
+| "Is ShopBot-Solid safe to pay?" | Free lookup. If the agent's last finished audit is within the freshness window (1 h by default), shows its grade with the audit id and exact age. If it is older, says so, shows it labelled as historical (not a current grade) and offers a fresh audit plan. An agent never tested gets a first audit plan |
 | "Audit ShopBot-Overcharge" | Shows an audit plan card (tests, maximum duration, price). You pay through a Dodo Payments hosted checkout link (test mode, no real money), press "I've paid", and Canary confirms the payment with Dodo server-side before any test runs. Then 3 probe agents attack the target live and a scorecard comes back |
 | "I own agent1q..." | Gives you a one-time code to prove ownership; verified agents are re-tested on a timer |
 
