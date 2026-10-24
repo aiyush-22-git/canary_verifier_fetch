@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -32,11 +33,13 @@ from core import chat, config
 from core.agentkit import make_agent
 from core.models import AttackCase, Exchange, ProbeRequest, ProbeResult
 from core.packs import load_packs
+from tests.fake_storage import FakeCtx, Lockstep
 
 pytestmark = pytest.mark.asyncio(loop_scope="module")
 
 TARGETS = ("target-leaky", "target-overcharger", "target-solid")
 CASE_TIMEOUT_S = 3
+SESSION = uuid4().hex[:8]
 
 
 def scripted_target(key: str):
@@ -137,7 +140,7 @@ class Sink:
                 await ctx.send(to, req)
 
     def ask(self, kind: str, target: Agent, cases: list[AttackCase], tag: str, timeout_s: int = CASE_TIMEOUT_S) -> str:
-        audit_id = f"{tag}-{kind}"
+        audit_id = f"{tag}-{kind}-{SESSION}"  # probes remember audit ids on disk (agent1q*_data.json): one run, one audit
         req = ProbeRequest(audit_id=audit_id, kind=kind, target_address=target.address, target_name=target.name,
                            cases=cases, judge_address=self.agent.address, timeout_s=timeout_s)
         self.outbox.append((config.agent_address(config.probe_key(kind)), req))
@@ -319,3 +322,122 @@ def test_an_ack_that_arrives_after_the_reply_still_counts():
     assert probe.apply_late_acks(run) == 0
     ex = Exchange.parse_obj(run["exchanges"][0])
     assert ex.acked and ex.events[0] == probe.EVENT_ACK
+
+
+# --- overlapping invocations (hosted agents): tests/fake_storage.Lockstep interleaves two handlers --------------------
+
+SHOP, JUDGE = "agent1qshopundertest", "agent1qjudgeundertest"
+
+
+@pytest.fixture
+def fast(monkeypatch):
+    from agents import probe
+
+    for name, value in (("CLAIM_SETTLE_S", 0.01), ("LOCK_RETRY_S", 0.02), ("SETTLE_S", 0.05), ("ACK_GRACE_S", 0.5)):
+        monkeypatch.setattr(probe, name, value)
+    return probe
+
+
+def chat_case(id_: str = "c1") -> AttackCase:
+    return AttackCase(id=id_, category="leak", title="t", action="chat", messages=["hi"], rule_kind="soft", rubric="r")
+
+
+def probe_request(audit_id: str, *cases: AttackCase) -> ProbeRequest:
+    return ProbeRequest(audit_id=audit_id, kind=cases[0].category, target_address=SHOP, target_name="Shop",
+                        judge_address=JUDGE, cases=list(cases), timeout_s=5)
+
+
+def sent_of(sent, model) -> list:
+    return [m for _, m in sent if isinstance(m, model)]
+
+
+def ack_of(msg: ChatMessage) -> ChatAcknowledgement:
+    return ChatAcknowledgement(acknowledged_msg_id=msg.msg_id, timestamp=datetime.now(UTC))
+
+
+def drive(probe, store, sent, until, timeout: float = 5.0):
+    """Tick the probe (as its interval would) until `until(sent)` holds."""
+    end = time.monotonic() + timeout
+    while not until(sent):
+        assert time.monotonic() < end, "the probe never got there"
+        asyncio.run(probe.tick(FakeCtx(store.plain, sent)))
+        time.sleep(0.05)
+
+
+def test_an_ack_and_a_reply_that_overlap_are_both_recorded(fast):
+    """Live: a reply and its ChatAck were handled overlapping; the ACK was lost and the shop got a false hard F."""
+    probe, store, sent = fast, Lockstep(), []
+    asyncio.run(probe.handle_request(FakeCtx(store.plain, sent), JUDGE, probe_request(f"ack-{SESSION}", chat_case())))
+    msg = sent_of(sent, ChatMessage)[0]
+    store.overlap_async(lambda s: probe.on_ack(FakeCtx(s, sent), SHOP, ack_of(msg)),
+                        lambda s: probe.on_text(FakeCtx(s, sent), SHOP, "hello", chat.text("hello")))
+    drive(probe, store, sent, lambda s: sent_of(s, ProbeResult))
+    ex = sent_of(sent, ProbeResult)[0].exchanges[0]
+    assert ex.acked and ex.received == ["hello"] and not ex.timed_out
+
+
+def test_a_reply_and_a_payment_request_that_overlap_are_both_recorded(fast):
+    probe, store, sent = fast, Lockstep(), []
+    case = AttackCase(id="p1", category="payment", title="t", action="pay_fake", messages=["buy socks"],
+                      rule_kind="event_match", rule_arg="^CompletePayment")
+    asyncio.run(probe.handle_request(FakeCtx(store.plain, sent), JUDGE, probe_request(f"pay-{SESSION}", case)))
+    asyncio.run(probe.on_ack(FakeCtx(store.plain, sent), SHOP, ack_of(sent_of(sent, ChatMessage)[0])))
+    ask = RequestPayment(accepted_funds=[Funds(currency="FET", amount="5.00", payment_method="fet_direct")],
+                         recipient="fetch1shop", deadline_seconds=60, reference="ref-1", description="Your order")
+    store.overlap_async(lambda s: probe.on_text(FakeCtx(s, sent), SHOP, "Please pay.", chat.text("Please pay.")),
+                        lambda s: probe.on_request_payment(FakeCtx(s, sent), SHOP, ask))
+    drive(probe, store, sent, lambda s: sent_of(s, CommitPayment))
+    commit = sent_of(sent, CommitPayment)[0]
+    asyncio.run(probe.on_cancel(FakeCtx(store.plain, sent), SHOP, CancelPayment(transaction_id=commit.transaction_id,
+                                                                                 reason="unverified")))
+    drive(probe, store, sent, lambda s: sent_of(s, ProbeResult))
+    ex = sent_of(sent, ProbeResult)[0].exchanges[0]
+    assert ex.received == ["Please pay."] and ex.acked
+    assert "RequestPayment amount=5.00 currency=FET" in ex.events and "CancelPayment reason=unverified" in ex.events
+    assert any(e.startswith("CommitPayment kind=fake") for e in ex.events)
+
+
+def test_a_probe_request_delivered_twice_runs_its_pack_once(fast):
+    """Live: the leak probe reported twice with different counts: the same audit's pack ran twice."""
+    probe, store, sent = fast, Lockstep(), []
+    req = probe_request(f"dup-{SESSION}", chat_case())
+    store.overlap_async(*[lambda s: probe.handle_request(FakeCtx(s, sent), JUDGE, req)] * 2)
+    assert len(sent_of(sent, ChatMessage)) == 1
+    msg = sent_of(sent, ChatMessage)[0]
+    asyncio.run(probe.on_ack(FakeCtx(store.plain, sent), SHOP, ack_of(msg)))
+    asyncio.run(probe.on_text(FakeCtx(store.plain, sent), SHOP, "hello", chat.text("hello")))
+    drive(probe, store, sent, lambda s: sent_of(s, ProbeResult))
+    asyncio.run(probe.handle_request(FakeCtx(store.plain, sent), JUDGE, req))  # a late duplicate: still the same audit
+    for _ in range(5):
+        asyncio.run(probe.tick(FakeCtx(store.plain, sent)))
+    assert len(sent_of(sent, ProbeResult)) == 1 and len(sent_of(sent, ChatMessage)) == 1
+
+
+def test_a_late_ack_and_the_tick_that_overlap_report_once(fast):
+    probe, store, sent = fast, Lockstep(), []
+    asyncio.run(probe.handle_request(FakeCtx(store.plain, sent), JUDGE, probe_request(f"late-{SESSION}", chat_case())))
+    msg = sent_of(sent, ChatMessage)[0]
+    asyncio.run(probe.on_text(FakeCtx(store.plain, sent), SHOP, "hello", chat.text("hello")))
+    assert not sent_of(sent, ProbeResult)  # the case is closed, the run waits for its ACK
+    store.overlap_async(lambda s: probe.on_ack(FakeCtx(s, sent), SHOP, ack_of(msg)),
+                        lambda s: probe.tick(FakeCtx(s, sent)))
+    drive(probe, store, sent, lambda s: sent_of(s, ProbeResult))
+    time.sleep(0.6)  # past ACK_GRACE_S: nothing is left to report a second time
+    for _ in range(3):
+        asyncio.run(probe.tick(FakeCtx(store.plain, sent)))
+    results = sent_of(sent, ProbeResult)
+    assert len(results) == 1 and results[0].exchanges[0].acked
+
+
+def test_a_second_audit_of_the_same_target_waits_its_turn(fast):
+    probe, store, sent = fast, Lockstep(), []
+    first, second = probe_request(f"q1-{SESSION}", chat_case()), probe_request(f"q2-{SESSION}", chat_case("c2"))
+    store.overlap_async(lambda s: probe.handle_request(FakeCtx(s, sent), JUDGE, first),
+                        lambda s: probe.handle_request(FakeCtx(s, sent), JUDGE, second))
+    assert len(sent_of(sent, ChatMessage)) == 1  # one conversation per target at a time
+    for n in (1, 2):
+        msg = sent_of(sent, ChatMessage)[-1]
+        asyncio.run(probe.on_ack(FakeCtx(store.plain, sent), SHOP, ack_of(msg)))
+        asyncio.run(probe.on_text(FakeCtx(store.plain, sent), SHOP, "hello", chat.text("hello")))
+        drive(probe, store, sent, lambda s, n=n: len(sent_of(s, ProbeResult)) == n)
+    assert {r.audit_id for r in sent_of(sent, ProbeResult)} == {first.audit_id, second.audit_id}

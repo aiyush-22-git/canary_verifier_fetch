@@ -5,15 +5,16 @@ its own), records what happened as an Exchange and sends one ProbeResult to the 
 never moves funds: every CommitPayment it sends carries a made-up transaction id.
 
 Event-driven and stateless by construction (it must also run as an Agentverse hosted agent, where globals reset after
-every invocation and handlers must not wait): the whole run lives in `ctx.storage` as plain JSON. The ProbeRequest handler
-stores the run, sends the first message and returns. Every message from the target (chat reply, ACK, payment message)
-is recorded and moves the run on; the interval tick fails over silent cases (`timed_out`) and sends the ProbeResult when
-the last case is done. Silence is data, not an exception.
+every invocation, handlers must not wait, and invocations overlap): the run lives in `ctx.storage` as plain JSON. Inbound
+handlers never modify the run: each message from the target goes into its own write-once key (ACKs as
+`ack:<target>:<msg_id>`, everything else as a slot of the run's inbox). A step, holding the target's lock, feeds the run
+what arrived and moves it on; the interval tick does the same for silent cases (`timed_out`) and lost wake-ups, and sends
+the ProbeResult when the last case is done. Silence is data, not an exception.
 
-    handle_request -> machine.start/begin ---> send first message
-    handle_item    -> machine.on_item -> (short settle) -> machine.advance ---> next message / commit / next case
-    tick           -> machine.expire  ---> silent step = timed_out, deadlines, missed wake-ups
-    finished run   -> ProbeResult to the Judge, state cleared, queued request for the same target starts
+    handle_request -> claim req:<audit>:<kind> (once) -> queue -> step: machine.start/begin ---> first message
+    handle_item    -> inbox slot -> step: machine.replay -> (short settle) -> step ---> next message / commit / next case
+    tick           -> step: machine.step/expire ---> silent step = timed_out, deadlines, missed wake-ups
+    finished run   -> claim sent:<run> -> ProbeResult to the Judge, state cleared, next queued request for the target
 """
 
 from __future__ import annotations
@@ -49,6 +50,7 @@ from core.models import (
     ProbeRequest,
     ProbeResult,
 )
+from core.registry import DUP_TAIL_S, SlotLog, holds, put_once
 
 SETTLE_S = 0.6  # after a reply, how long we keep listening for follow-up messages of the same turn
 SETTLE_GRACE_S = 1.5  # the tick finishes a settle whose wake-up was lost (hosted agents reset between invocations)
@@ -62,7 +64,6 @@ CHAT_ACTIONS = ("chat", "raw_json", "tool_injection")
 PAY_ACTIONS = ("pay_fake", "pay_replay", "pay_wrong_amount")
 SUPPORTED = (*CHAT_ACTIONS, *PAY_ACTIONS, "service_before_pay")
 TERMINAL = ("complete", "cancel", "reject")
-MAX_ACKS = 500
 ACK_GRACE_S = 6.0  # hosted delivery is unordered: an ACK may land after the reply, so a finished run waits this long for it
 
 Out = dict[str, Any]  # {"type": "chat", "msg": ChatMessage} or {"type": "commit", ...}
@@ -160,7 +161,7 @@ def _finish_case(run: dict[str, Any], now: float) -> list[Out]:
         sent_chat=sent_chat, acked=acked, latency_ms=int((cur["last_at"] - cur["started"]) * 1000) if cur["activity"] else 0,
         timed_out=silent,
     ).dict())
-    if sent_chat and not acked:
+    if sent_chat and not acked and not silent:  # a silent case is skipped by the Judge: its ACK changes nothing
         run["late_acks"][str(len(run["exchanges"]) - 1)] = cur["sent_ids"]
     run["idx"] += 1
     run["cur"] = None
@@ -253,6 +254,28 @@ def expire(run: dict[str, Any], now: float) -> list[Out]:
     return []
 
 
+def step(run: dict[str, Any], now: float) -> list[Out]:
+    """Whatever is due at `now`: a finished quiet period, a silent step, a wait deadline."""
+    cur = run["cur"]
+    if cur is None:
+        return []
+    if cur["settle_at"]:
+        return advance(run, now) if now >= cur["settle_at"] else []
+    return expire(run, now)
+
+
+def replay(run: dict[str, Any], items: list[dict[str, Any]], now: float) -> list[Out]:
+    """Feed the run the messages that arrived since the last step, in order, then advance what is due."""
+    outs: list[Out] = []
+    for item in items:
+        cur = run["cur"]
+        if cur is not None and cur["settle_at"] and item["at"] >= cur["settle_at"]:
+            outs += advance(run, now)  # the quiet period ended before this message came: move on first, as a live run would
+        if on_item(run, item["kind"], item["payload"], item["at"]) == "now":
+            outs += advance(run, now)
+    return outs + step(run, now)
+
+
 def result_of(run: dict[str, Any]) -> ProbeResult:
     return ProbeResult(
         audit_id=run["audit_id"], kind=run["kind"], target_address=run["target_address"],
@@ -260,33 +283,95 @@ def result_of(run: dict[str, Any]) -> ProbeResult:
     )
 
 
-# --- storage and sending ---------------------------------------------------------------------------------------------
+# --- storage: one key per writer (hosted handlers overlap, and the store has no compare-and-swap) -----------------
+#
+#   rq:<target>:<i>        ProbeRequests for one target, a SlotLog: its head is the next one to run
+#   req:<audit>:<kind>     write-once claim: a ProbeRequest delivered twice runs once
+#   run:<target>           the run's state machine, written only by the holder of lock:<target>
+#   lock:<target>          a short lease (put_once + read-back), so one invocation at a time advances a run
+#   in:<run_id>:<i>        what the target sent, one write-once slot per message (SlotLog)
+#   ack:<target>:<msg_id>  a ChatAcknowledgement, written once and never read-modified-written
+#   sent:<run_id>          write-once claim: the ProbeResult goes out once
+#   targets:<i>            targets this probe has runs for (SlotLog), so the tick finds them
+
+CLAIM_SETTLE_S = 0.15  # after a write-once claim, re-read it this much later: an overlapping writer has written by then
+LOCK_LEASE_S = 30.0  # a lock older than this belongs to an invocation that died
+LOCK_TRIES = 4
+LOCK_RETRY_S = 0.25
+STEP_ROUNDS = 4
 
 
-def _get(ctx: Context, key: str, default: Any) -> Any:
-    value = ctx.storage.get(key)
-    return default if value is None else value
+async def _claim(store, key: str, value: Any = None, stale=None) -> str | None:
+    nonce = put_once(store, key, value, stale=stale)
+    if nonce and CLAIM_SETTLE_S:
+        await asyncio.sleep(CLAIM_SETTLE_S)
+        if not holds(store, key, nonce):
+            return None
+    return nonce
+
+
+async def _append(log: SlotLog, value: Any) -> int:
+    i = log.head()
+    while await _claim(log.store, f"{log.name}:{i}", value) is None:
+        i += 1
+    return i
 
 
 def _load(ctx: Context, address: str) -> dict[str, Any] | None:
-    return ctx.storage.get(f"run:{address}")
+    run = ctx.storage.get(f"run:{address}")
+    return run if isinstance(run, dict) and "rid" in run else None  # a run stored by an older build is dropped
 
 
-def _targets(ctx: Context) -> list[str]:
-    return list(_get(ctx, "targets", []))
+def _lease_over(rec: dict) -> bool:
+    return time.time() > rec.get("at", 0) + LOCK_LEASE_S
 
 
-def _save(ctx: Context, address: str, run: dict[str, Any]) -> None:
-    run["_stored"] = True
-    ctx.storage.set(f"run:{address}", run)
-    targets = _targets(ctx)
-    if address not in targets:
-        ctx.storage.set("targets", [*targets, address])
+def _request_done_a_while_ago(rec: dict) -> bool:
+    done = (rec.get("v") or {}).get("done") or 0
+    return bool(done) and time.time() > done + DUP_TAIL_S
 
 
-def _clear(ctx: Context, address: str) -> None:
-    ctx.storage.remove(f"run:{address}")
-    ctx.storage.set("targets", [t for t in _targets(ctx) if t != address])
+async def _acquire(ctx: Context, address: str) -> str | None:
+    for attempt in range(LOCK_TRIES):
+        if attempt:
+            await asyncio.sleep(LOCK_RETRY_S)
+        if nonce := await _claim(ctx.storage, f"lock:{address}", stale=_lease_over):
+            return nonce
+    return None  # the holder drains the inbox before it lets go, and the tick catches anything left
+
+
+def _release(ctx: Context, address: str, nonce: str) -> None:
+    if holds(ctx.storage, f"lock:{address}", nonce):
+        ctx.storage.remove(f"lock:{address}")
+
+
+def _refresh_acks(ctx: Context, address: str, run: dict[str, Any]) -> None:
+    """run["acked"] is rebuilt from the ack keys at every step: it is a cache, never the record."""
+    ids = list(run["cur"]["sent_ids"]) if run["cur"] else []
+    for waiting in run["late_acks"].values():
+        ids += waiting
+    run["acked"] = [i for i in ids if ctx.storage.get(f"ack:{address}:{i}") is not None]
+
+
+def _inbox(ctx: Context, run: dict[str, Any]) -> list[dict[str, Any]]:
+    items = [v for _, v in SlotLog(ctx.storage, f"in:{run['rid']}").items(run["consumed"], settled_s=CLAIM_SETTLE_S)]
+    run["consumed"] += len(items)
+    return items
+
+
+def _start_next(ctx: Context, address: str, now: float) -> dict[str, Any] | None:
+    log = SlotLog(ctx.storage, f"rq:{address}")
+    i = log.head()
+    raw = log.get(i, settled_s=CLAIM_SETTLE_S)  # a slot still being claimed is left for the next step
+    if raw is None:
+        return None
+    log.set_head(i + 1)
+    ctx.storage.remove(f"rq:{address}:{i}")  # below the head nobody reads or appends
+    req = ProbeRequest.parse_raw(raw)
+    run = start(req, now)
+    run.update(rid=f"{req.audit_id}:{req.kind}:{secrets.token_hex(4)}", consumed=0, all_sent=[])
+    ctx.logger.info(f"[state] run {run['rid']} starts: {len(req.cases)} cases against {address}")
+    return run
 
 
 async def _send(ctx: Context, address: str, outs: list[Out]) -> None:
@@ -305,30 +390,56 @@ async def _send(ctx: Context, address: str, outs: list[Out]) -> None:
         await ctx.send(address, commit)
 
 
-async def _flush(ctx: Context, address: str, run: dict[str, Any], outs: list[Out]) -> None:
-    """Persist first, then send: a handler that dies after the save still leaves a consistent run."""
-    if not run["finished"]:
-        _save(ctx, address, run)
-        await _send(ctx, address, outs)
-        return
-    if run.get("_stored") and _load(ctx, address) is None:  # the tick and a message handler can both reach this point: only the first reports
-        return
-    if apply_late_acks(run) and time.time() < run["finished_at"] + ACK_GRACE_S:
-        _save(ctx, address, run)  # the tick flushes again until the ACKs arrive or the grace period ends
-        return
-    _clear(ctx, address)
-    ctx.logger.info(f"[outbound] ProbeResult -> {run['judge_address']} audit={run['audit_id']} exchanges={len(run['exchanges'])}")
-    await ctx.send(run["judge_address"], result_of(run))
-    queued = _get(ctx, f"queue:{address}", [])
-    if queued:  # another audit of the same target was waiting: one conversation per target at a time
-        ctx.storage.set(f"queue:{address}", queued[1:])
-        await _launch(ctx, ProbeRequest.parse_obj(queued[0]))
+async def _report(ctx: Context, address: str, run: dict[str, Any]) -> None:
+    """The run is over: one ProbeResult, then its keys go."""
+    if put_once(ctx.storage, f"sent:{run['rid']}") is not None:
+        ctx.logger.info(f"[outbound] ProbeResult -> {run['judge_address']} audit={run['audit_id']} exchanges={len(run['exchanges'])}")
+        await ctx.send(run["judge_address"], result_of(run))
+    now = time.time()
+    ctx.storage.set(f"req:{run['audit_id']}:{run['kind']}", {"n": "done", "at": now, "v": {"done": now}})
+    for i in range(run["consumed"]):
+        ctx.storage.remove(f"in:{run['rid']}:{i}")
+    for msg_id in run["all_sent"]:
+        ctx.storage.remove(f"ack:{address}:{msg_id}")
+    ctx.storage.remove(f"run:{address}")
 
 
-async def _launch(ctx: Context, req: ProbeRequest) -> None:
-    run = start(req, time.time())
-    outs = begin(run, time.time())
-    await _flush(ctx, req.target_address, run, outs)
+async def _persist(ctx: Context, address: str, run: dict[str, Any], outs: list[Out]) -> bool:
+    """Save first, then send: a handler that dies after the save still leaves a consistent run. True if the run is over."""
+    run["all_sent"] += [str(o["msg"].msg_id) for o in outs if o["type"] == "chat"]
+    if run["finished"] and not (apply_late_acks(run) and time.time() < run["finished_at"] + ACK_GRACE_S):
+        await _report(ctx, address, run)
+        return True
+    ctx.storage.set(f"run:{address}", run)  # a finished run waiting for late ACKs stays: the tick or the ACK reports it
+    await _send(ctx, address, outs)
+    return False
+
+
+async def _step(ctx: Context, address: str) -> float:
+    """Take the target's lock, feed the run everything that arrived, advance it, save, send. Returns the settle time
+    the run now waits for (0 if none)."""
+    nonce = await _acquire(ctx, address)
+    if nonce is None:
+        return 0.0
+    try:
+        for _ in range(STEP_ROUNDS):
+            now = time.time()
+            run = _load(ctx, address)
+            if run is None:
+                run = _start_next(ctx, address, now)  # one conversation per target: the next queued request
+                if run is None:
+                    return 0.0
+                outs = begin(run, now)
+            else:
+                _refresh_acks(ctx, address, run)
+                outs = replay(run, _inbox(ctx, run), now)
+            if await _persist(ctx, address, run, outs):
+                continue
+            if SlotLog(ctx.storage, f"in:{run['rid']}").get(run["consumed"], settled_s=CLAIM_SETTLE_S) is None:
+                return run["cur"]["settle_at"] if run["cur"] else 0.0
+        return 0.0
+    finally:
+        _release(ctx, address, nonce)
 
 
 # --- handlers ----------------------------------------------------------------------------------------------------------
@@ -336,42 +447,34 @@ async def _launch(ctx: Context, req: ProbeRequest) -> None:
 
 async def handle_request(ctx: Context, sender: str, req: ProbeRequest) -> None:
     ctx.logger.info(f"[inbound] ProbeRequest audit={req.audit_id} kind={req.kind} cases={len(req.cases)}")
-    if _load(ctx, req.target_address) is not None:
-        ctx.storage.set(f"queue:{req.target_address}", [*_get(ctx, f"queue:{req.target_address}", []), json.loads(req.json())])
+    if not await _claim(ctx.storage, f"req:{req.audit_id}:{req.kind}", {"done": 0}, stale=_request_done_a_while_ago):
+        ctx.logger.warning(f"[state] duplicate ProbeRequest audit={req.audit_id} kind={req.kind}: ignored")
         return
-    await _launch(ctx, req)
-
-
-async def _advance(ctx: Context, address: str, wanted: list[Any] | None) -> None:
-    run = _load(ctx, address)
-    if run is None or (wanted is not None and token(run) != wanted):
-        return  # a newer message arrived: its own settle will advance
-    outs = advance(run, time.time())
-    await _flush(ctx, address, run, outs)
+    await _append(SlotLog(ctx.storage, f"rq:{req.target_address}"), req.json())
+    if req.target_address not in [v for _, v in SlotLog(ctx.storage, "targets").items(0)]:
+        await _append(SlotLog(ctx.storage, "targets"), req.target_address)
+    await _step(ctx, req.target_address)
 
 
 async def handle_item(ctx: Context, address: str, kind: str, payload: dict[str, Any]) -> None:
     run = _load(ctx, address)
-    if run is None:
+    if run is None or run["cur"] is None:
         return
-    decision = on_item(run, kind, payload, time.time())
-    wanted = token(run)
-    _save(ctx, address, run)
-    if decision == "now":
-        await _advance(ctx, address, None)
-    elif decision == "settle":
-        await asyncio.sleep(SETTLE_S)  # short quiet period for the rest of the target's turn, then move on
-        await _advance(ctx, address, wanted)
+    item = {"kind": kind, "payload": payload, "at": time.time()}
+    await _append(SlotLog(ctx.storage, f"in:{run['rid']}"), item)
+    settle_at = await _step(ctx, address)
+    for _ in range(STEP_ROUNDS):  # short quiet period for the rest of the target's turn, then move on
+        if not settle_at:
+            break
+        await asyncio.sleep(max(0.0, settle_at - time.time()) + 0.01)
+        settle_at = await _step(ctx, address)
 
 
 async def tick(ctx: Context) -> None:
-    for address in _targets(ctx):
-        run = _load(ctx, address)
-        if run is None:
-            _clear(ctx, address)
-            continue
-        outs = expire(run, time.time())
-        await _flush(ctx, address, run, outs)
+    for address in dict.fromkeys(v for _, v in SlotLog(ctx.storage, "targets").items(0)):
+        queue = SlotLog(ctx.storage, f"rq:{address}")
+        if _load(ctx, address) is not None or queue.occupied(queue.head()):
+            await _step(ctx, address)
 
 
 async def on_text(ctx: Context, sender: str, body: str, msg: ChatMessage) -> None:
@@ -385,12 +488,11 @@ async def on_text(ctx: Context, sender: str, body: str, msg: ChatMessage) -> Non
 
 async def on_ack(ctx: Context, sender: str, ack: ChatAcknowledgement) -> None:
     run = _load(ctx, sender)
-    if run is not None:
-        run["acked"] = [*run["acked"], str(ack.acknowledged_msg_id)][-MAX_ACKS:]
-        if run["finished"]:
-            await _flush(ctx, sender, run, [])  # the last missing ACK releases the result early
-        else:
-            _save(ctx, sender, run)
+    if run is None:
+        return
+    ctx.storage.set(f"ack:{sender}:{ack.acknowledged_msg_id}", 1)
+    if run["finished"]:
+        await _step(ctx, sender)  # the last missing ACK releases the result early
 
 
 async def on_request_payment(ctx: Context, sender: str, msg: RequestPayment) -> None:

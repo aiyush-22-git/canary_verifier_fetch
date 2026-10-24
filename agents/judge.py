@@ -391,10 +391,6 @@ class _Audit:
     results: dict[str, ProbeResult] = field(default_factory=dict)
     deadline: float = 0.0
 
-    def dump(self) -> str:
-        return json.dumps({"req": self.req.json(), "results": {k: r.json() for k, r in self.results.items()},
-                           "deadline": self.deadline})
-
     @classmethod
     def load(cls, raw: str) -> _Audit:
         d = json.loads(raw)
@@ -404,7 +400,9 @@ class _Audit:
 
 def build_judge(registry: Registry | None = None, agent=None):
     """`agent` is passed by the Agentverse hosted bundle. Audits in flight live in the registry, not in
-    globals or sleeping tasks: a hosted agent loses both between messages."""
+    globals or sleeping tasks: a hosted agent loses both between messages, and runs handlers overlapping.
+    So nothing is read-modified-written: the request is one key, each probe's result its own write-once key
+    (the first one per probe wins), progress lines and the grading are write-once claims."""
     reg = registry or get_registry()
     if agent is None:
         agent = make_agent(
@@ -422,32 +420,36 @@ def build_judge(registry: Registry | None = None, agent=None):
         ctx.logger.info(f"[outbound] Verdict -> {audit.req.requester} audit={audit.req.audit_id} grade={verdict.grade}")
         await ctx.send(audit.req.requester, verdict)
 
-    async def accept(ctx: Context, result: ProbeResult) -> None:
-        raw = reg.judge_get(result.audit_id)
+    async def report(ctx: Context, audit_id: str) -> None:
+        """Progress for every result not reported yet, and the verdict once all are in. Both the request handler and
+        the result handlers call this after writing their own key, so whichever runs last sees everything."""
+        raw = reg.judge_get(audit_id)
         if raw is None:
-            reg.judge_early(result.audit_id, result.json())
-            return
-        audit = _Audit.load(raw)  # no await between load and save, so overlapping results can't overwrite each other
-        audit.results[result.kind] = result
-        reg.judge_put(result.audit_id, audit.dump(), audit.deadline)
-        prog = progress_for(result, audit.req.canary)
-        ctx.logger.info(f"[outbound] ProbeProgress -> {audit.req.requester} {prog.headline}")
-        await ctx.send(audit.req.requester, prog)
+            return  # no request yet (its handler reports what is stored), or already graded
+        audit = _Audit.load(raw)
+        for kind, result in audit.results.items():
+            if reg.judge_claim_progress(audit_id, kind):  # one line per probe, however many handlers get here
+                prog = progress_for(result, audit.req.canary)
+                ctx.logger.info(f"[outbound] ProbeProgress -> {audit.req.requester} {prog.headline}")
+                await ctx.send(audit.req.requester, prog)
         if all(k in audit.results for k in audit.req.expected_kinds):
-            await finalise(ctx, result.audit_id)
+            await finalise(ctx, audit_id)
 
     @agent.on_message(JudgeRequest)
     async def on_request(ctx: Context, sender: str, req: JudgeRequest) -> None:
         ctx.logger.info(f"[inbound] JudgeRequest from {sender} audit={req.audit_id} expects={req.expected_kinds}")
-        deadline = time.time() + req.deadline_s
-        reg.judge_put(req.audit_id, _Audit(req=req, deadline=deadline).dump(), deadline)
-        for raw in reg.judge_take_early(req.audit_id):  # results that beat their request
-            await accept(ctx, ProbeResult.parse_raw(raw))
+        if not reg.judge_open(req.audit_id, req.json(), time.time() + req.deadline_s):
+            ctx.logger.warning(f"[state] duplicate JudgeRequest audit={req.audit_id}: ignored")
+            return
+        await report(ctx, req.audit_id)  # results that beat their request are already stored
 
     @agent.on_message(ProbeResult)
     async def on_result(ctx: Context, sender: str, result: ProbeResult) -> None:
         ctx.logger.info(f"[inbound] ProbeResult from {sender} audit={result.audit_id} kind={result.kind}")
-        await accept(ctx, result)
+        if not reg.judge_add_result(result.audit_id, result.kind, result.json()):
+            ctx.logger.warning(f"[state] second ProbeResult audit={result.audit_id} kind={result.kind}: ignored")
+            return
+        await report(ctx, result.audit_id)
 
     @agent.on_interval(period=5.0)
     async def sweep(ctx: Context) -> None:
