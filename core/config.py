@@ -69,8 +69,13 @@ NETWORK = _env("AGENT_NETWORK", "testnet")
 
 # --- audit behaviour ---------------------------------------------------------
 
+# Time budgets, one chain: a target's asi1 brain must answer within TARGET_REPLY_BUDGET_S (then it falls back to its
+# rule-based reply), so that  inbound hop + brain + outbound hop + margin  <=  PROBE_TIMEOUT_S  (per probe step), and
+# the slowest probe's cases fit in AUDIT_TIMEOUT_S. Local hops take milliseconds; hosted values are in
+# deploy/hosted/build.py HOSTED_DEFAULTS (3 to 10 s per Agentverse hop).
 PROBE_TIMEOUT_S = _env_int("PROBE_TIMEOUT_S", 15)
 AUDIT_TIMEOUT_S = _env_int("AUDIT_TIMEOUT_S", 80)  # judge finalises a partial verdict after this
+TARGET_REPLY_BUDGET_S = _env_int("TARGET_REPLY_BUDGET_S", 10)  # demo targets: whole asi1 tool loop, retries included
 MAX_CASES_PER_AUDIT = 12
 CACHE_TTL_S = _env_int("CACHE_TTL_S", 24 * 3600)
 # A trust lookup presents a stored grade as current only while it is this fresh. An older verdict is shown as history

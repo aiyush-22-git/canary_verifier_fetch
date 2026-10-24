@@ -202,18 +202,20 @@ async def send_ack(ctx: Context, to: str, msg: ChatMessage) -> None:
 # --- protocol factory ---------------------------------------------------------------
 
 
-def make_chat_protocol(
-    on_text: TextHandler, on_ack: AckHandler | None = None, on_start: Callable[[Context, str], Awaitable[None]] | None = None
-) -> Protocol:
-    """Chat Protocol with the Fetch conventions: ACK first, iterate content, never crash on
-    unknown content. `on_text(ctx, sender, text, msg)` is the only thing an agent supplies;
-    `on_start(ctx, sender)` optionally greets a session that opens without any text."""
-    proto = Protocol(spec=chat_protocol_spec)
+StartHandler = Callable[[Context, str], Awaitable[None]]
 
-    @proto.on_message(ChatMessage)
-    async def _on_chat(ctx: Context, sender: str, msg: ChatMessage) -> None:
-        ctx.logger.info(f"[inbound] ChatMessage from {sender} msg_id={msg.msg_id}")
+
+async def handle_chat(
+    ctx: Context, sender: str, msg: ChatMessage, on_text: TextHandler, on_start: StartHandler | None = None
+) -> None:
+    """The ChatMessage handler: the ACK goes out first, before any slow work, on every message. A failed ACK
+    is logged and the message is still handled; a handler error is logged, never raised into the runtime."""
+    ctx.logger.info(f"[inbound] ChatMessage from {sender} msg_id={msg.msg_id}")
+    try:
         await send_ack(ctx, sender, msg)
+    except Exception as exc:  # noqa: BLE001 - the reply must not depend on the ACK getting out
+        ctx.logger.warning(f"[outbound] ChatAcknowledgement to {sender} failed: {type(exc).__name__}: {exc}")
+    try:
         body = extract_text(msg)
         for item in msg.content:
             if isinstance(item, StartSessionContent):
@@ -227,6 +229,21 @@ def make_chat_protocol(
             await on_text(ctx, sender, body, msg)
         elif on_start and any(isinstance(i, StartSessionContent) for i in msg.content):
             await on_start(ctx, sender)
+    except Exception as exc:  # noqa: BLE001 - logged with the sender, so a silent agent shows why in its logs
+        ctx.logger.exception(f"[inbound] handler failed for ChatMessage {msg.msg_id} from {sender}: {type(exc).__name__}")
+
+
+def make_chat_protocol(
+    on_text: TextHandler, on_ack: AckHandler | None = None, on_start: StartHandler | None = None
+) -> Protocol:
+    """Chat Protocol with the Fetch conventions: ACK first, iterate content, never crash on
+    unknown content. `on_text(ctx, sender, text, msg)` is the only thing an agent supplies;
+    `on_start(ctx, sender)` optionally greets a session that opens without any text."""
+    proto = Protocol(spec=chat_protocol_spec)
+
+    @proto.on_message(ChatMessage)
+    async def _on_chat(ctx: Context, sender: str, msg: ChatMessage) -> None:
+        await handle_chat(ctx, sender, msg, on_text, on_start)
 
     @proto.on_message(ChatAcknowledgement)
     async def _on_ack(ctx: Context, sender: str, msg: ChatAcknowledgement) -> None:

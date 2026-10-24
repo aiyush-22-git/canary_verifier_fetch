@@ -1,4 +1,5 @@
 """The only asi1 client. OpenAI SDK pointed at ASI:One, 20 s timeout, one retry, a persisted token cap.
+`run_tools` (the demo targets' brain) also takes a wall-clock budget: no request or retry runs past it.
 
 Nothing else imports `openai`. Callers get plain dicts / strings, or `None` on failure so
 every feature can degrade (rules-only verdicts, keyword intent, cached plans).
@@ -10,6 +11,7 @@ import inspect
 import json
 import logging
 import re
+import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -20,7 +22,8 @@ from core import config
 
 log = logging.getLogger("canary.llm")
 
-TIMEOUT_S = 20
+TIMEOUT_S = 20  # per asi1 request (intent, planner, judge); run_tools also stops at its own budget
+MIN_ATTEMPT_S = 3.0  # under a budget, a request (or its retry) only starts if at least this much is left
 _client: AsyncOpenAI | None = None
 
 
@@ -73,14 +76,21 @@ def _record_usage(resp: Any) -> None:
         log.warning("could not record asi1 usage: %s", type(exc).__name__)
 
 
-async def _create(**kwargs: Any) -> Any:
-    """One call with one retry. Raises the last error; wrappers below turn that into None."""
+async def _create(*, deadline: float | None = None, **kwargs: Any) -> Any:
+    """One call with one retry. Raises the last error; wrappers below turn that into None.
+    `deadline` (a time.monotonic() value) bounds both attempts: each request's timeout is cut to what is left."""
     if not available():
         raise RuntimeError("ASI1_API_KEY is not set")
     if tokens_used() >= config.LLM_TOKEN_CAP:
         raise RuntimeError(f"asi1 token cap reached ({config.LLM_TOKEN_CAP} tokens)")
     last: Exception | None = None
     for attempt in range(2):
+        if deadline is not None:
+            left = deadline - time.monotonic()
+            if left < MIN_ATTEMPT_S:
+                last = last or TimeoutError(f"asi1 budget spent ({left:.1f} s left)")
+                break
+            kwargs["timeout"] = min(TIMEOUT_S, left)
         try:
             resp = await _get_client().chat.completions.create(**kwargs)
             _record_usage(resp)
@@ -189,14 +199,18 @@ async def run_tools(
     model: str | None = None,
     max_rounds: int = 5,
     max_tokens: int = 600,
+    budget_s: float | None = None,
 ) -> tuple[str, list[dict[str, Any]]] | None:
     """Target brain: the full tool-call loop (asi1 asks for tools -> `handler` runs them -> results go
     back -> repeat, at most `max_rounds`). asi1 keeps no server-side thread, so the caller owns
-    `history` and gets the extended one back. Returns (text, history) or None when asi1 failed."""
+    `history` and gets the extended one back. Returns (text, history), or None when asi1 failed or
+    `budget_s` (wall clock for the whole loop, retries included) ran out, so the caller degrades in time."""
     convo = [*history, {"role": "user", "content": user}]
+    deadline = time.monotonic() + budget_s if budget_s is not None else None
     try:
         for _ in range(max_rounds + 1):
             resp = await _create(
+                deadline=deadline,
                 model=model or config.ASI1_TARGET_MODEL,
                 messages=[{"role": "system", "content": system}, *convo],
                 tools=tools,
@@ -228,8 +242,9 @@ async def run_tools(
                 if inspect.isawaitable(result):
                     result = await result
                 convo.append({"role": "tool", "tool_call_id": c.id, "content": json.dumps(result, default=str)})
-    except Exception as exc:  # asi1 down, cap reached, or a tool blew up: the target degrades
+    except Exception as exc:  # asi1 down, cap reached, budget spent, or a tool blew up: the target degrades
         log.warning("asi1 tool loop failed: %s", type(exc).__name__)
+        visible(f"[llm] asi1 tool loop failed: {type(exc).__name__}: {str(exc)[:160]}")
         return None
     log.warning("asi1 tool loop exceeded %d rounds", max_rounds)
     return None
