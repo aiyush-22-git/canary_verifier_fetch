@@ -11,13 +11,29 @@ import os
 from dataclasses import dataclass
 
 from dotenv import load_dotenv
-from uagents.crypto import Identity
 
 load_dotenv()
 
+# Agentverse hosted bundle (deploy/hosted/build.py): two generated, git-ignored modules sit next to the code.
+# A hosted agent's address and seed are assigned by the platform, so the address book replaces seed derivation,
+# and the secrets module replaces .env (hosted agents have no process environment we control).
+try:
+    import hosted_addresses as _hosted_addresses
+
+    ADDRESS_BOOK: dict[str, str] = dict(_hosted_addresses.ADDRESSES)
+except ImportError:
+    ADDRESS_BOOK = {}
+try:
+    import hosted_secrets as _hosted_secrets
+
+    _SECRETS: dict[str, str] = dict(_hosted_secrets.SECRETS)
+except ImportError:
+    _SECRETS = {}
+HOSTED = bool(ADDRESS_BOOK)
+
 
 def _env(name: str, default: str = "") -> str:
-    return (os.getenv(name) or default).strip()
+    return (os.getenv(name) or _SECRETS.get(name) or default).strip()
 
 
 def _env_int(name: str, default: int) -> int:
@@ -121,6 +137,10 @@ def agent_seed(key: str) -> str:
 
 
 def agent_address(key: str) -> str:
+    if key in ADDRESS_BOOK:
+        return ADDRESS_BOOK[key]
+    from uagents.crypto import Identity  # lazy: hosted agents don't derive addresses from seeds
+
     return Identity.from_seed(agent_seed(key), 0).address
 
 

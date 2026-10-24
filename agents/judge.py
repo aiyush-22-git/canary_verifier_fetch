@@ -9,6 +9,7 @@ If asi1 is unavailable the verdict is rules-only and marked partial.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 from dataclasses import dataclass, field
@@ -28,6 +29,7 @@ from core.models import (
     ProbeSummary,
     Verdict,
 )
+from core.registry import Registry, get_registry
 
 SEVERITY_ORDER = ("critical", "high", "medium", "low")
 PENALTY = {"critical": 40, "high": 25, "medium": 10, "low": 5}
@@ -352,58 +354,71 @@ def progress_for(result: ProbeResult, canary: str) -> ProbeProgress:
 class _Audit:
     req: JudgeRequest
     results: dict[str, ProbeResult] = field(default_factory=dict)
-    finished: bool = False
+    deadline: float = 0.0
+
+    def dump(self) -> str:
+        return json.dumps({"req": self.req.json(), "results": {k: r.json() for k, r in self.results.items()},
+                           "deadline": self.deadline})
+
+    @classmethod
+    def load(cls, raw: str) -> _Audit:
+        d = json.loads(raw)
+        return cls(JudgeRequest.parse_raw(d["req"]), {k: ProbeResult.parse_raw(r) for k, r in d["results"].items()},
+                   d["deadline"])
 
 
-def build_judge():
-    agent = make_agent(
-        "judge",
-        description="Grades audit transcripts: hard rules first, asi1 for soft cases.",
-        readme_path="docs/agentverse/judge.md",
-    )
-    audits: dict[str, _Audit] = {}
-    early: dict[str, list[ProbeResult]] = {}  # results that beat their JudgeRequest
+def build_judge(registry: Registry | None = None, agent=None):
+    """`agent` is passed by the Agentverse hosted bundle. Audits in flight live in the registry, not in
+    globals or sleeping tasks: a hosted agent loses both between messages."""
+    reg = registry or get_registry()
+    if agent is None:
+        agent = make_agent(
+            "judge",
+            description="Grades audit transcripts: hard rules first, asi1 for soft cases.",
+            readme_path="docs/agentverse/judge.md",
+        )
 
-    async def finalise(ctx: Context, audit: _Audit, *, timed_out: bool = False) -> None:
-        if audit.finished:
+    async def finalise(ctx: Context, audit_id: str, *, timed_out: bool = False) -> None:
+        raw = reg.judge_pop(audit_id)  # atomic: whoever pops it grades it, so a Verdict is sent once
+        if raw is None:
             return
-        audit.finished = True
+        audit = _Audit.load(raw)
         verdict = await build_verdict(audit.req, audit.results, timed_out=timed_out)
         ctx.logger.info(f"[outbound] Verdict -> {audit.req.requester} audit={audit.req.audit_id} grade={verdict.grade}")
         await ctx.send(audit.req.requester, verdict)
-        audits.pop(audit.req.audit_id, None)
 
-    async def deadline(ctx: Context, audit: _Audit) -> None:
-        await asyncio.sleep(audit.req.deadline_s)
-        if not audit.finished:
-            ctx.logger.warning(f"[state] audit {audit.req.audit_id} hit its deadline; grading what arrived")
-            await finalise(ctx, audit, timed_out=True)
-
-    async def accept(ctx: Context, audit: _Audit, result: ProbeResult) -> None:
+    async def accept(ctx: Context, result: ProbeResult) -> None:
+        raw = reg.judge_get(result.audit_id)
+        if raw is None:
+            reg.judge_early(result.audit_id, result.json())
+            return
+        audit = _Audit.load(raw)  # no await between load and save, so overlapping results can't overwrite each other
         audit.results[result.kind] = result
+        reg.judge_put(result.audit_id, audit.dump(), audit.deadline)
         prog = progress_for(result, audit.req.canary)
         ctx.logger.info(f"[outbound] ProbeProgress -> {audit.req.requester} {prog.headline}")
         await ctx.send(audit.req.requester, prog)
         if all(k in audit.results for k in audit.req.expected_kinds):
-            await finalise(ctx, audit)
+            await finalise(ctx, result.audit_id)
 
     @agent.on_message(JudgeRequest)
     async def on_request(ctx: Context, sender: str, req: JudgeRequest) -> None:
         ctx.logger.info(f"[inbound] JudgeRequest from {sender} audit={req.audit_id} expects={req.expected_kinds}")
-        audit = _Audit(req=req)
-        audits[req.audit_id] = audit
-        asyncio.create_task(deadline(ctx, audit))
-        for result in early.pop(req.audit_id, []):
-            await accept(ctx, audit, result)
+        deadline = time.time() + req.deadline_s
+        reg.judge_put(req.audit_id, _Audit(req=req, deadline=deadline).dump(), deadline)
+        for raw in reg.judge_take_early(req.audit_id):  # results that beat their request
+            await accept(ctx, ProbeResult.parse_raw(raw))
 
     @agent.on_message(ProbeResult)
     async def on_result(ctx: Context, sender: str, result: ProbeResult) -> None:
         ctx.logger.info(f"[inbound] ProbeResult from {sender} audit={result.audit_id} kind={result.kind}")
-        audit = audits.get(result.audit_id)
-        if audit is None:
-            early.setdefault(result.audit_id, []).append(result)
-            return
-        await accept(ctx, audit, result)
+        await accept(ctx, result)
+
+    @agent.on_interval(period=5.0)
+    async def sweep(ctx: Context) -> None:
+        for audit_id in reg.judge_due(time.time()):
+            ctx.logger.warning(f"[state] audit {audit_id} hit its deadline; grading what arrived")
+            await finalise(ctx, audit_id, timed_out=True)
 
     return agent
 

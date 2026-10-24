@@ -12,7 +12,6 @@ import time
 from dataclasses import dataclass
 
 from uagents import Context, Protocol
-from uagents.setup import fund_agent_if_low
 from uagents_core.contrib.protocols.chat import ChatMessage
 from uagents_core.contrib.protocols.payment import (
     CancelPayment,
@@ -45,20 +44,28 @@ class ActiveAudit:
     system: bool = False  # re-verify run: no user to message
     started: float = 0.0
 
+    @classmethod
+    def from_row(cls, row) -> ActiveAudit:
+        return cls(AuditPlan.parse_raw(row["plan_json"]), row["requester"], row["paid_tx"], bool(row["system"]), row["started"])
 
-def build_orchestrator(registry: Registry | None = None):
+
+def build_orchestrator(registry: Registry | None = None, agent=None):
+    """`agent` is passed by the Agentverse hosted bundle (the platform pre-creates it); locally we build our own."""
     reg = registry or get_registry()
-    agent = make_agent(
-        "orchestrator",
-        mailbox=True,
-        description="Canary: paid trust audits for Agentverse agents. Ask 'is <agent> safe?' before you pay one.",
-        readme_path="docs/agentverse/orchestrator.md",
-    )
-    if config.mailbox_enabled() and config.NETWORK == "testnet":
-        fund_agent_if_low(str(agent.wallet.address()))
+    if agent is None:
+        agent = make_agent(
+            "orchestrator",
+            mailbox=True,
+            description="Canary: paid trust audits for Agentverse agents. Ask 'is <agent> safe?' before you pay one.",
+            readme_path="docs/agentverse/orchestrator.md",
+        )
+        if config.mailbox_enabled() and config.NETWORK == "testnet":
+            from uagents.setup import fund_agent_if_low  # not available to hosted agents, which never reach this branch
 
-    active: dict[str, ActiveAudit] = {}
-    wallet = str(agent.wallet.address())
+            fund_agent_if_low(str(agent.wallet.address()))
+
+    # Audits waiting for a Verdict live in the registry (not in a dict): a hosted agent loses its globals between messages.
+    wallet = str(agent.wallet.address()) if getattr(agent, "wallet", None) else config.agent_address("orchestrator")
     judge_addr = config.agent_address("judge")
 
     # --- helpers --------------------------------------------------------------------------
@@ -94,9 +101,9 @@ def build_orchestrator(registry: Registry | None = None):
         """Fan out: JudgeRequest first (so it knows what to expect), then one ProbeRequest per family."""
         by_kind = planner.split_by_kind(plan)
         canary = reg.canary_for(plan.target_address)
-        active[plan.audit_id] = ActiveAudit(plan, requester, paid_tx, system, time.time())
+        reg.add_active(plan.audit_id, requester, plan.json(), paid_tx, system)
         if not system:
-            await chat.send_text(ctx, requester, f"Payment confirmed. Testing {plan.target_name} live: "
+            await chat.send_text(ctx, requester, f"{'Starting' if paid_tx == 'free' else 'Payment confirmed.'} Testing {plan.target_name} live: "
                                  f"{len(plan.cases)} tests across {len(by_kind)} probes. Results appear as each probe finishes.")
         judge_req = JudgeRequest(
             audit_id=plan.audit_id, target_name=plan.target_name, target_address=plan.target_address,
@@ -112,14 +119,12 @@ def build_orchestrator(registry: Registry | None = None):
             addr = config.agent_address(config.probe_key(kind))
             ctx.logger.info(f"[outbound] ProbeRequest -> {addr} kind={kind} cases={len(kind_cases)}")
             await ctx.send(addr, req)
-        asyncio.create_task(watchdog(ctx, plan.audit_id))
 
-    async def watchdog(ctx: Context, audit_id: str) -> None:
+    async def watchdog(ctx: Context, row) -> None:
         """If the Judge never answers, tell the user instead of leaving them hanging."""
-        await asyncio.sleep(config.AUDIT_TIMEOUT_S + 20)
-        job = active.pop(audit_id, None)
-        if job is None:
+        if reg.pop_active(row["audit_id"]) is None:  # the Verdict won the race
             return
+        job, audit_id = ActiveAudit.from_row(row), row["audit_id"]
         reg.claim_pending(audit_id, job.requester, "running", "failed")
         ctx.logger.error(f"[error] audit {audit_id} got no verdict")
         if not job.system:
@@ -164,6 +169,10 @@ def build_orchestrator(registry: Registry | None = None):
             plan = AuditPlan.parse_raw(row["plan_json"])
             if not reg.is_allowed(plan.target_address):
                 await notice(ctx, sender, "Agent not allowlisted", "The owner has not opted in.", "Ask the owner to verify it.")
+                return True
+            if payments.is_free():  # one atomic claim: pressing the button twice still starts one audit
+                if reg.claim_pending(audit_id, sender, "awaiting_payment", "running", payment_ref="free"):
+                    await start_run(ctx, sender, plan, "free")
                 return True
             if payments.uses_checkout_link() and payments.enabled():
                 sess = reg.dodo_session(audit_id, sender)
@@ -369,16 +378,17 @@ def build_orchestrator(registry: Registry | None = None):
 
     @agent.on_message(ProbeProgress)
     async def on_progress(ctx: Context, sender: str, msg: ProbeProgress) -> None:
-        job = active.get(msg.audit_id)
-        if job and not job.system:
-            await chat.send_text(ctx, job.requester, cards.progress_line(msg.kind, msg.headline))
+        row = reg.get_active(msg.audit_id)
+        if row and not row["system"]:
+            await chat.send_text(ctx, row["requester"], cards.progress_line(msg.kind, msg.headline))
 
     @agent.on_message(Verdict)
     async def on_verdict(ctx: Context, sender: str, v: Verdict) -> None:
-        job = active.pop(v.audit_id, None)
-        if job is None:
+        row = reg.pop_active(v.audit_id)
+        if row is None:
             ctx.logger.warning(f"[state] verdict for unknown audit {v.audit_id}")
             return
+        job = ActiveAudit.from_row(row)
         if v.passed == 0 and not v.findings:
             # Nothing was graded: don't cache a grade for it and don't show a scorecard.
             reg.claim_pending(v.audit_id, job.requester, "running", "failed")
@@ -403,11 +413,20 @@ def build_orchestrator(registry: Registry | None = None):
 
     # --- re-verify timer ----------------------------------------------------------------------------------------
 
+    @agent.on_interval(period=10.0)
+    async def sweep(ctx: Context) -> None:
+        """Replaces a sleeping task per audit: hosted agents can't keep one alive between messages."""
+        cutoff = time.time() - (config.AUDIT_TIMEOUT_S + 20)
+        for row in reg.active_audits():
+            if row["started"] <= cutoff:
+                await watchdog(ctx, row)
+
     @agent.on_interval(period=float(max(30, config.REVERIFY_INTERVAL_S)))
     async def reverify(ctx: Context) -> None:
         now = time.time()
+        busy_targets = {AuditPlan.parse_raw(r["plan_json"]).target_address for r in reg.active_audits()}
         for row in reg.verified_agents():
-            busy = any(j.plan.target_address == row["address"] for j in active.values())
+            busy = row["address"] in busy_targets
             if busy or now - (row["last_verified"] or 0) < config.REVERIFY_INTERVAL_S:
                 continue
             ctx.logger.info(f"[state] re-verifying {row['name']}")

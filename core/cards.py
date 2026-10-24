@@ -89,11 +89,12 @@ def audit_plan(plan: AuditPlan, *, rail_label: str) -> CardSpec:
     tests = f"{len(plan.cases)} live tests across {', '.join(kinds)}"
     if generated:
         tests += f" ({generated} written for this agent)"
+    free = rail_label == "free"
     rows = [
         {"label": "Target", "value": plan.target_name},
         {"label": "Tests", "value": tests},
         {"label": "Takes", "value": "about 60 seconds"},
-        {"label": "Price", "value": f"{plan.price_usd} USD ({rail_label}, test funds)"},
+        {"label": "Price", "value": "Free" if free else f"{plan.price_usd} USD ({rail_label}, test funds)"},
     ]
     if plan.rationale:
         rows.insert(2, {"label": "Why these tests", "value": _clip(plan.rationale, 140)})
@@ -101,16 +102,15 @@ def audit_plan(plan: AuditPlan, *, rail_label: str) -> CardSpec:
         "title": f"Audit {plan.target_name}",
         "summary_rows": rows,
         "approve_cta": {
-            "label": "Pay and run",
+            "label": "Run the audit" if free else "Pay and run",
             "selection": {"action": "pay_and_run", "audit_id": plan.audit_id},
             "primary": True,
         },
         "reject_cta": {"label": "Cancel", "selection": {"action": "cancel", "audit_id": plan.audit_id}},
     }
-    return CardSpec(
-        "review", payload,
-        f"Audit plan for {plan.target_name}: {len(plan.cases)} tests, {plan.price_usd} USD. Pay and run, or cancel.",
-    )
+    text = (f"Audit plan for {plan.target_name}: {len(plan.cases)} tests, free. Run it, or cancel." if free
+            else f"Audit plan for {plan.target_name}: {len(plan.cases)} tests, {plan.price_usd} USD. Pay and run, or cancel.")
+    return CardSpec("review", payload, text)
 
 
 # --- 2b. payment link (detail): Dodo hosted checkout -----------------------------------------------------

@@ -33,7 +33,14 @@ class Verification:
     tx_id: str = ""
 
 
+def is_free() -> bool:
+    """PAYMENT_RAIL=free: audits are free (hackathon demo of malicious-input testing). No payment is requested, none is faked."""
+    return config.PAYMENT_RAIL == "free"
+
+
 def rail_label() -> str:
+    if is_free():
+        return "free"
     if config.PAYMENT_RAIL == "dodo":
         return "Dodo Payments " + ("test mode" if config.DODO_ENV == "test_mode" else "live")
     if config.PAYMENT_RAIL == "stripe":

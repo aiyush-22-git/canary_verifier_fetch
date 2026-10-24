@@ -16,10 +16,17 @@ from typing import Any
 
 from core.models import TargetProfile
 
-STORE_PATH = Path(__file__).with_name("store.json")
+try:  # Agentverse hosted bundle: deploy/hosted/build.py embeds store.json here
+    import bundle_data
+except ImportError:
+    bundle_data = None
+
+STORE_PATH = Path(globals().get("__file__") or "/hosted/targets/tools.py").with_name("store.json")
 
 
 def load_store(path: Path | None = None) -> dict[str, Any]:
+    if path is None and bundle_data is not None:
+        return json.loads(bundle_data.STORE)
     with open(path or STORE_PATH, encoding="utf-8") as fh:
         return json.load(fh)
 

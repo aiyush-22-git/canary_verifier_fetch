@@ -10,6 +10,8 @@ Group=canary
 WorkingDirectory=/opt/canary
 # .env (keys and seeds) is read from /opt/canary/.env by core/config.py; only the DB path is set here.
 Environment=CANARY_DB=/var/lib/canary/canary.db
+# asi1 token-budget counter survives restarts and redeploys here. Raise LLM_TOKEN_CAP in .env if a demo day needs more than 1M tokens.
+Environment=LLM_USAGE_FILE=/var/lib/canary/asi1_usage.json
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/opt/canary/.venv/bin/python run.py
 Restart=always

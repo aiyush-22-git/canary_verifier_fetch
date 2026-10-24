@@ -6,6 +6,7 @@ Orchestrator checks every card selection against: a selection alone never starts
 
 from __future__ import annotations
 
+import base64
 import secrets
 import sqlite3
 import threading
@@ -70,27 +71,123 @@ CREATE TABLE IF NOT EXISTS payments (
     method TEXT NOT NULL,
     created_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS active (
+    audit_id TEXT PRIMARY KEY,      -- Orchestrator: audits that were fanned out and wait for a Verdict
+    requester TEXT NOT NULL,
+    plan_json TEXT NOT NULL,
+    paid_tx TEXT NOT NULL DEFAULT '',
+    system INTEGER NOT NULL DEFAULT 0,
+    started REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS judge_audits (
+    audit_id TEXT PRIMARY KEY,      -- Judge: request + results so far, and when to grade what arrived
+    doc_json TEXT NOT NULL,
+    deadline REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS judge_early (
+    audit_id TEXT NOT NULL,         -- Judge: a ProbeResult that arrived before its JudgeRequest
+    result_json TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
 """
 
 
+STORE_KEY = "canary_db"
+
+
 class Registry:
-    def __init__(self, path: str | None = None) -> None:
-        self._db = sqlite3.connect(path or config.DB_PATH, check_same_thread=False)
+    """With `store` (an Agentverse hosted agent's key-value storage) the database lives in memory and is
+    snapshotted into the store after every write and reloaded before every operation. Hosted agents lose
+    their globals between messages, and each operation is synchronous, so a snapshot per operation keeps
+    overlapping handlers from overwriting each other (the claim_pending / record_payment guarantees hold)."""
+
+    def __init__(self, path: str | None = None, store=None) -> None:
+        self._store = store
+        self._db = sqlite3.connect(":memory:" if store is not None else (path or config.DB_PATH), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._lock = threading.Lock()
         with self._lock:
+            self._load()
             self._db.executescript(SCHEMA)
             self._db.commit()
+            self._save()
+
+    def _load(self) -> None:
+        if self._store is None:
+            return
+        raw = self._store.get(STORE_KEY)
+        if raw:
+            self._db.deserialize(base64.b64decode(raw))
+
+    def _save(self) -> None:
+        if self._store is not None:
+            self._store.set(STORE_KEY, base64.b64encode(self._db.serialize()).decode("ascii"))
 
     def _run(self, sql: str, args: tuple = ()) -> sqlite3.Cursor:
         with self._lock:
+            self._load()
             cur = self._db.execute(sql, args)
             self._db.commit()
+            self._save()
             return cur
 
     def _all(self, sql: str, args: tuple = ()) -> list[sqlite3.Row]:
         with self._lock:
+            self._load()
             return self._db.execute(sql, args).fetchall()
+
+    # --- active audits (what the Orchestrator is waiting on; was an in-memory dict) ---------------
+
+    def add_active(self, audit_id: str, requester: str, plan_json: str, paid_tx: str, system: bool) -> None:
+        self._run(
+            "INSERT OR REPLACE INTO active(audit_id,requester,plan_json,paid_tx,system,started) VALUES(?,?,?,?,?,?)",
+            (audit_id, requester, plan_json, paid_tx, int(system), time.time()),
+        )
+
+    def get_active(self, audit_id: str) -> sqlite3.Row | None:
+        rows = self._all("SELECT * FROM active WHERE audit_id=?", (audit_id,))
+        return rows[0] if rows else None
+
+    def pop_active(self, audit_id: str) -> sqlite3.Row | None:
+        """Remove and return an active audit; only one caller gets it (verdict vs watchdog race)."""
+        row = self.get_active(audit_id)
+        if row is None:
+            return None
+        cur = self._run("DELETE FROM active WHERE audit_id=?", (audit_id,))
+        return row if cur.rowcount == 1 else None
+
+    def active_audits(self) -> list[sqlite3.Row]:
+        return self._all("SELECT * FROM active")
+
+    # --- judge: audits waiting for probe results (was an in-memory dict) -----------------------------
+
+    def judge_put(self, audit_id: str, doc_json: str, deadline: float) -> None:
+        self._run("INSERT OR REPLACE INTO judge_audits(audit_id,doc_json,deadline) VALUES(?,?,?)",
+                  (audit_id, doc_json, deadline))
+
+    def judge_get(self, audit_id: str) -> str | None:
+        rows = self._all("SELECT doc_json FROM judge_audits WHERE audit_id=?", (audit_id,))
+        return rows[0]["doc_json"] if rows else None
+
+    def judge_pop(self, audit_id: str) -> str | None:
+        doc = self.judge_get(audit_id)
+        if doc is None:
+            return None
+        return doc if self._run("DELETE FROM judge_audits WHERE audit_id=?", (audit_id,)).rowcount == 1 else None
+
+    def judge_due(self, now: float) -> list[str]:
+        return [r["audit_id"] for r in self._all("SELECT audit_id FROM judge_audits WHERE deadline<=?", (now,))]
+
+    def judge_early(self, audit_id: str, result_json: str) -> None:
+        """A ProbeResult that beat its JudgeRequest."""
+        self._run("INSERT INTO judge_early(audit_id,result_json,created_at) VALUES(?,?,?)",
+                  (audit_id, result_json, time.time()))
+
+    def judge_take_early(self, audit_id: str) -> list[str]:
+        rows = self._all("SELECT rowid AS id, result_json FROM judge_early WHERE audit_id=? ORDER BY rowid", (audit_id,))
+        for r in rows:
+            self._run("DELETE FROM judge_early WHERE rowid=?", (r["id"],))
+        return [r["result_json"] for r in rows]
 
     # --- agents & allowlist --------------------------------------------------
 
@@ -275,12 +372,19 @@ class Registry:
 
 
 _registry: Registry | None = None
+_store = None
+
+
+def bind_store(store) -> None:
+    """Hosted agents: keep the registry in the agent's own storage (called once by the bundle's agent.py)."""
+    global _store, _registry
+    _store, _registry = store, None
 
 
 def get_registry() -> Registry:
     global _registry
     if _registry is None:
-        _registry = Registry()
+        _registry = Registry(store=_store)
         _registry.seed_allowlist()
     return _registry
 

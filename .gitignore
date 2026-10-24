@@ -7,3 +7,8 @@ __pycache__/
 .ruff_cache/
 .claude/worktrees/
 deploy/.host
+
+# Agentverse hosted bundles (hold API keys)
+deploy/hosted/dist/
+deploy/hosted/addresses.json
+agent1q*_data.json

@@ -58,8 +58,11 @@ def _record_usage(resp: Any) -> None:
     if not isinstance(spent, int) or spent <= 0:
         return
     path = Path(config.LLM_USAGE_FILE)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"total_tokens": tokens_used() + spent}), encoding="utf-8")
+    try:  # bookkeeping must never fail a call that already succeeded (read-only home, full disk)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"total_tokens": tokens_used() + spent}), encoding="utf-8")
+    except OSError as exc:
+        log.warning("could not record asi1 usage: %s", type(exc).__name__)
 
 
 async def _create(**kwargs: Any) -> Any:

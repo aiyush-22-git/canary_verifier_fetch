@@ -102,7 +102,12 @@ def keyword_intent(message: str) -> Intent:
     return Intent("help", "", "keywords")
 
 
+GREETING = re.compile(r"^\s*(hi|hello|hey|yo|hola|help|start|menu|what can you do)\b[\s\w?!.,]{0,20}$", re.I)
+
+
 async def classify(message: str) -> Intent:
+    if GREETING.match(message):  # a greeting never needs a model: answer in milliseconds, not after an asi1 round trip
+        return Intent("help", "", "keywords")
     if llm.available():
         picked = await llm.tool_call(
             [{"role": "system", "content": SYSTEM}, {"role": "user", "content": message}], TOOLS

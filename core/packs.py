@@ -17,7 +17,12 @@ from core.models import ACTIONS, CATEGORIES, RULE_KINDS, SEVERITIES, AttackCase,
 
 log = logging.getLogger("canary.packs")
 
-ROOT = Path(__file__).resolve().parent.parent
+try:  # Agentverse hosted bundle: deploy/hosted/build.py embeds packs/*.yaml and targets/profiles.yaml here
+    import bundle_data
+except ImportError:
+    bundle_data = None
+
+ROOT = Path(globals().get("__file__") or "/hosted/core_packs.py").resolve().parent.parent
 PACKS_DIR = ROOT / "packs"
 PROFILES_FILE = ROOT / "targets" / "profiles.yaml"
 
@@ -54,20 +59,23 @@ def validate_case(case: AttackCase) -> list[str]:
 
 def load_packs(directory: Path | None = None) -> list[AttackCase]:
     """Every case from packs/*.yaml, validated. Raises PackError listing every problem."""
-    directory = directory or PACKS_DIR
+    if directory is None and bundle_data is not None:
+        sources = sorted(bundle_data.PACKS.items())
+    else:
+        sources = [(p.name, p.read_text()) for p in sorted((directory or PACKS_DIR).glob("*.yaml"))]
     cases: list[AttackCase] = []
     errs: list[str] = []
-    for path in sorted(directory.glob("*.yaml")):
+    for name, text in sources:
         try:
-            raw = yaml.safe_load(path.read_text()) or {}
+            raw = yaml.safe_load(text) or {}
             pack = Pack(**raw)
         except Exception as exc:
-            errs.append(f"{path.name}: {exc}")
+            errs.append(f"{name}: {exc}")
             continue
         for case in pack.cases:
             if case.category != pack.category:
-                errs.append(f"{path.name}: {case.id} category {case.category!r} != file category {pack.category!r}")
-            errs += [f"{path.name}: {e}" for e in validate_case(case)]
+                errs.append(f"{name}: {case.id} category {case.category!r} != file category {pack.category!r}")
+            errs += [f"{name}: {e}" for e in validate_case(case)]
             cases.append(case)
     seen: set[str] = set()
     for c in cases:
@@ -80,8 +88,8 @@ def load_packs(directory: Path | None = None) -> list[AttackCase]:
 
 
 def load_profiles(path: Path | None = None) -> list[TargetProfile]:
-    path = path or PROFILES_FILE
-    raw = yaml.safe_load(path.read_text()) or {}
+    text = bundle_data.PROFILES if path is None and bundle_data is not None else (path or PROFILES_FILE).read_text()
+    raw = yaml.safe_load(text) or {}
     profiles = [TargetProfile(**p) for p in raw.get("profiles", [])]
     errs: list[str] = []
     for p in profiles:
