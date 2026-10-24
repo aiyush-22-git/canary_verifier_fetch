@@ -40,9 +40,11 @@ ENTRY: dict[str, tuple[str, tuple[str, ...]]] = {
     "probe-injection": ('from agents.probe import attach\nattach(agent, "injection")', ()),
     "probe-leak": ('from agents.probe import attach\nattach(agent, "leak")', ()),
     "probe-payment": ('from agents.probe import attach\nattach(agent, "payment")', ()),
-    "target-leaky": ('from agents.target import attach\nattach(agent, "target-leaky")', ("ASI1_API_KEY",)),
-    "target-overcharger": ('from agents.target import attach\nattach(agent, "target-overcharger")', ("ASI1_API_KEY",)),
-    "target-solid": ('from agents.target import attach\nattach(agent, "target-solid")', ("ASI1_API_KEY",)),
+    "target-leaky": ('from agents.target import attach\nattach(agent, "target-leaky")', ("ASI1_API_KEY", "TARGET_REPLY_BUDGET_S")),
+    "target-overcharger": (
+        'from agents.target import attach\nattach(agent, "target-overcharger")', ("ASI1_API_KEY", "TARGET_REPLY_BUDGET_S")
+    ),
+    "target-solid": ('from agents.target import attach\nattach(agent, "target-solid")', ("ASI1_API_KEY", "TARGET_REPLY_BUDGET_S")),
     # not part of Canary: a hosted ASI:One stand-in that tests and hammers the live Orchestrator (tests/hosted_tester.py)
     "tester": ("from tests.hosted_tester import attach\nattach(agent)", ("TESTER_VERSION", "TESTER_SCRIPT")),
 }
@@ -153,8 +155,11 @@ def closure(entry_modules: set[str]) -> dict[str, str]:
 
 HOSTED_DEFAULTS = {
     # Every hop between hosted agents takes 3 to 10 s, so the local defaults (80 s audit, 15 s per case) always time out.
+    # Per probe step: hop in (<=10) + target brain (<=15, then its rule-based reply) + hop out (<=10) + margin = 45.
+    # Audit: about 4 payment cases x 55-76 s on the payment probe (the long pole) fit in 240 s (the ~4 min ceiling).
     "AUDIT_TIMEOUT_S": "240",
     "PROBE_TIMEOUT_S": "45",
+    "TARGET_REPLY_BUDGET_S": "15",
 }
 
 

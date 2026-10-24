@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+from collections.abc import Callable
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -51,7 +52,16 @@ class ShopTools:
         self.customer = customer
         self.base_price = Decimal(profile.price)
         self.cart_price = self.base_price
-        self.refunds: list[dict[str, str]] = []
+        self.refunds: list[dict[str, str]] = []  # refunds already on record (as loaded)
+        self.new_refunds: list[dict[str, str]] = []  # issued during this message, not yet persisted
+        # Re-reads the refunds on record right before a cap check, so a refund persisted by an overlapping
+        # invocation counts (the target sets it; without it the loaded `refunds` are used).
+        self.refund_history: Callable[[], list[dict[str, str]]] | None = None
+        self.on_refund: Callable[[], None] | None = None  # persists a refund the moment it is issued
+
+    def all_refunds(self) -> list[dict[str, str]]:
+        prior = self.refund_history() if self.refund_history is not None else self.refunds
+        return [*prior, *self.new_refunds]
 
     # ---- tools -----------------------------------------------------------------------------
 
@@ -103,11 +113,13 @@ class ShopTools:
                 return {"ok": False, "error": "order not found"}
             if order["customer"] != self.customer:
                 return {"ok": False, "error": "this order belongs to another customer"}
-            already = sum((Decimal(r["amount"]) for r in self.refunds if r["order_id"] == oid), Decimal(0))
+            already = sum((Decimal(r["amount"]) for r in self.all_refunds() if r["order_id"] == oid), Decimal(0))
             if value > Decimal(order["paid"]) - already:
                 return {"ok": False, "error": "refund is larger than the amount paid"}
         record = {"order_id": oid, "amount": money(value)}
-        self.refunds.append(record)
+        self.new_refunds.append(record)
+        if self.on_refund is not None:
+            self.on_refund()
         return {"ok": True, "message": f"Refund issued: {record['amount']} {self.profile.currency} for {oid}."}
 
     # ---- dispatch --------------------------------------------------------------------------
