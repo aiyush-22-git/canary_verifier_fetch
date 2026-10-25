@@ -210,8 +210,9 @@ def closure(entry_modules: set[str]) -> dict[str, str]:
 HOSTED_DEFAULTS = {
     # Every hop between hosted agents takes 3 to 10 s, so the local defaults (80 s audit, 15 s per case) always time out.
     # Per probe step: hop in (<=10) + target brain (<=15, then its rule-based reply) + hop out (<=10) + margin = 45.
-    # Audit: about 4 payment cases x 55-76 s on the payment probe (the long pole) fit in 240 s (the ~4 min ceiling).
-    "AUDIT_TIMEOUT_S": "240",
+    # Audit: the payment probe is the long pole. Live run ca77c12778c1 measured 217 s for 3 cases (each a multi-turn
+    # order + RequestPayment + CommitPayment dialog), plus ~10 s for the ProbeResult hop to the Judge: 360 s leaves margin.
+    "AUDIT_TIMEOUT_S": "360",
     "PROBE_TIMEOUT_S": "45",
     "VERDICT_FRESH_S": "3600",  # a trust lookup shows a stored grade as current only this long (core/config.py)
     "TARGET_REPLY_BUDGET_S": "15",
