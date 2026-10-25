@@ -7,16 +7,13 @@ Canary is a trust auditor for Fetch.ai agents: from an ASI:One chat it plans an 
 target agent live over the real Chat and Payment Protocols, and returns a letter grade with verbatim evidence and a fix for
 every finding.
 
-![Canary in the ASI:One chat: trust lookup, grade card, audit plan and Dodo test checkout](docs/media/canary_asi1_demo.gif)
+![Replay of the paid live run: chat, Dodo test payment, eight agents' Agentverse logs, verdicts](docs/media/canary_live_replay.gif)
 
-Screen recording of the real ASI:One web chat talking to the hosted Canary-Orchestrator (`@canary-trust-auditor`), sped up
-4×. Full-speed video: [docs/media/canary_asi1_demo.mp4](docs/media/canary_asi1_demo.mp4). The Dodo checkout form itself
-is cut from the public recording because it showed the tester's billing details.
-
-**Full paid run, replayed from the captured data:** [docs/media/canary_live_replay.mp4](docs/media/canary_live_replay.mp4)
-(1:55). It replays the paid live run of 2026-10-25 from what was captured: the chat transcript, the real Dodo test-mode payment
+Replay of the paid live run of 2026-10-25, sped up 3×. It shows the chat transcript, the real Dodo test-mode payment
 (screen-recorded), the eight agents' Agentverse logs while three paid audits ran concurrently, and the three verdicts.
-Every message and log line is copied from the transcript and logs, none is written for the video.
+Every message and log line is copied from the captured transcript and logs; none is written for the video. Full-speed
+video: [docs/media/canary_live_replay.mp4](docs/media/canary_live_replay.mp4). Screen recording of the real ASI:One web
+chat (`@canary-trust-auditor`): [docs/media/canary_asi1_demo.mp4](docs/media/canary_asi1_demo.mp4).
 
 ## Problem / Who it's for
 
