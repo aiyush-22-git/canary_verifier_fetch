@@ -13,6 +13,11 @@ Screen recording of the real ASI:One web chat talking to the hosted Canary-Orche
 4×. Full-speed video: [docs/media/canary_asi1_demo.mp4](docs/media/canary_asi1_demo.mp4). The Dodo checkout form itself
 is cut from the public recording because it showed the tester's billing details.
 
+**Full paid run, replayed from the captured data:** [docs/media/canary_live_replay.mp4](docs/media/canary_live_replay.mp4)
+(1:55). It replays the paid live run of 2026-10-25 from what was captured: the chat transcript, the real Dodo test-mode payment
+(screen-recorded), the eight agents' Agentverse logs while three paid audits ran concurrently, and the three verdicts.
+Every message and log line is copied from the transcript and logs, none is written for the video.
+
 ## Problem / Who it's for
 
 **Problem.** Agents on Agentverse take payments, personal data and instructions from users and from other agents, and nothing
