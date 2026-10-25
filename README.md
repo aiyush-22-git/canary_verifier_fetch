@@ -7,6 +7,12 @@ Canary is a trust auditor for Fetch.ai agents: from an ASI:One chat it plans an 
 target agent live over the real Chat and Payment Protocols, and returns a letter grade with verbatim evidence and a fix for
 every finding.
 
+![Canary in the ASI:One chat: trust lookup, grade card, audit plan and Dodo test checkout](docs/media/canary_asi1_demo.gif)
+
+Screen recording of the real ASI:One web chat talking to the hosted Canary-Orchestrator (`@canary-trust-auditor`), sped up
+4×. Full-speed video: [docs/media/canary_asi1_demo.mp4](docs/media/canary_asi1_demo.mp4). The Dodo checkout form itself
+is cut from the public recording because it showed the tester's billing details.
+
 ## Problem / Who it's for
 
 **Problem.** Agents on Agentverse take payments, personal data and instructions from users and from other agents, and nothing
@@ -103,6 +109,36 @@ The deployed rail is **Dodo Payments in test mode** (`PAYMENT_RAIL=dodo`, `DODO_
   inventing a grade, and offers *Re-run my audit* without paying again.
 - **Attacking others' payments.** The Payment probe sends targets fake and replayed `CommitPayment`s (made-up transaction
   ids) and checks they answer with `CancelPayment`/`RejectPayment`, not `CompletePayment`.
+
+### Test the payment flow yourself
+
+No real money moves: the Orchestrator's checkout is a Dodo **test-mode** session (the page shows a *Test Mode* badge).
+
+1. In [ASI:One](https://asi1.ai), message `@canary-trust-auditor` (or the Orchestrator address above):
+   *"Audit ShopBot-Solid"*, or *"Is ShopBot-Overcharge safe to pay?"* and then *Run a fresh audit* on the grade card.
+2. On the plan card press **Pay and run**. Canary replies with a `test.checkout.dodopayments.com` link and a card with
+   **I've paid, start the audit**.
+3. **Try paying nothing first:** press *I've paid* without paying. Canary asks Dodo, gets "not paid", and answers
+   *"I can't see your payment yet"*. No test runs.
+4. Open the link and pay with a Dodo test card (from [Dodo's testing docs](https://docs.dodopayments.com/miscellaneous/testing-process)):
+
+   | Card | Expiry / CVC | Result |
+   |---|---|---|
+   | `4242 4242 4242 4242` | `06/32` / `123` | payment succeeds |
+   | `4000 0000 0000 0002` | `06/32` / `123` | payment declined: Canary keeps refusing to start |
+
+   If the checkout asks for contact and billing details first, use made-up test values; don't enter real personal data.
+5. Press **I've paid** again. Canary verifies the checkout with Dodo server-side, replies *"Payment confirmed. Testing …
+   live"*, streams each probe's progress, and ends with the scorecard. Hosted audits take a few minutes.
+6. **Replay protection:** the same Dodo payment can't start a second audit. **Failed audit:** if a paid audit can't finish,
+   the card offers *Re-run my audit* at no charge.
+
+The other side, Canary attacking a target's payment handling, is visible in the scorecard's *View telemetry*: the payment
+probe's fake and replayed `CommitPayment`s and whether the target answered `CancelPayment` or `CompletePayment`.
+
+Locally: `uv run pytest -q tests/test_dodo.py` checks the verification rules against a fake Dodo API (unpaid, pending,
+failed, cancelled, underpaid, wrong currency, a payment for another audit or another checkout, Dodo unreachable), and `uv run pytest -m live` creates a real Dodo test-mode checkout (needs
+`DODO_PAYMENTS_API_KEY` and `DODO_PRODUCT_ID`).
 
 `core/payments.py` also supports the Payment Protocol with `PAYMENT_RAIL=fet` (on-chain FET, stable-testnet by default) or
 `PAYMENT_RAIL=stripe` (Stripe test mode). These are code-supported alternatives, not the deployed rail.
