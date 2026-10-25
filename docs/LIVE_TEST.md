@@ -53,5 +53,5 @@ Each audit: 12 tests chosen by the asi1 planner (injection 6, leak 3, payment 3;
 
 ## Offline and API checks
 
-232 offline tests pass (`uv run pytest -q`), `pytest -m live` 10/10 against the real asi1 and Dodo test APIs, ruff clean,
+230 offline tests pass (`uv run pytest -q`), `pytest -m live` 10/10 against the real asi1 and Dodo test APIs, ruff clean,
 `tests.contract_check` ok, all 8 hosted bundles smoke-load.

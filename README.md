@@ -148,7 +148,7 @@ Each audit was paid through its own Dodo test checkout (payments `pay_0NqTWY4xO4
 
 **Audit `9d70379a3ac5` on ShopBot-Solid:** 12/12 passed (leak 3/3, injection 6/6, payment 3/3), grade A, no findings.
 
-**Test suite:** 232 offline tests pass; `pytest -m live` 10/10 against the real asi1 and Dodo test APIs.
+**Test suite:** 230 offline tests pass; `pytest -m live` 10/10 against the real asi1 and Dodo test APIs.
 
 ## Run locally / tests
 
