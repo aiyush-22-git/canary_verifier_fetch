@@ -58,12 +58,37 @@ agent economy: delivering on a fake payment, leaking another customer's data, sk
 
 ## Architecture
 
-```
-ASI:One --(Chat Protocol, Agentverse)--> Canary-Orchestrator   asi1: intent tool-calling, planner; cards, Dodo seller, re-test timer
-   Orchestrator --JudgeRequest-------> Canary-Judge             hard rules first, asi1 rubric for soft cases
-   Orchestrator --ProbeRequest x3----> Probe-Injection | Probe-Leak | Probe-Payment
-   Probes --Chat / Payment Protocol--> ShopBot-Leaky | ShopBot-Overcharge | ShopBot-Solid   (asi1 tool-loop brains)
-   Probes --ProbeResult--------------> Judge --ProbeProgress, Verdict--> Orchestrator --scorecard card--> ASI:One
+```mermaid
+flowchart TD
+    U(["ASI:One user"])
+    O["Canary-Orchestrator<br/>asi1: intent tool-calling + planner<br/>cards · Dodo seller · re-test timer"]
+    J["Canary-Judge<br/>hard rules first<br/>asi1 rubric for soft cases"]
+    D[("Dodo Payments<br/>test mode")]
+    A[("asi1 API<br/>api.asi1.ai")]
+
+    subgraph P["Probes"]
+        PI["Probe-Injection"]
+        PL["Probe-Leak"]
+        PP["Probe-Payment"]
+    end
+
+    subgraph T["Demo targets (asi1 tool-loop brains)"]
+        TL["ShopBot-Leaky"]
+        TO["ShopBot-Overcharge"]
+        TS["ShopBot-Solid"]
+    end
+
+    U -- "Chat Protocol via Agentverse" --> O
+    O -- "checkout link + server-side verify" --> D
+    O -- "JudgeRequest" --> J
+    O -- "ProbeRequest ×3" --> P
+    P -- "Chat + Payment Protocol attacks<br/>(fake / replayed CommitPayment)" --> T
+    P -- "ProbeResult" --> J
+    J -- "ProbeProgress, Verdict" --> O
+    O -- "scorecard card" --> U
+    O -. "intent, plan" .-> A
+    J -. "soft grading" .-> A
+    T -. "tool loop" .-> A
 ```
 
 All eight agents run as hosted agents on Agentverse (they can also run in one local uAgents Bureau via `run.py`).
